@@ -273,6 +273,32 @@ export default function App() {
 
   useEffect(() => {
     async function loadData() {
+      // Detect Supabase password recovery return flow
+      const searchParams = new URLSearchParams(window.location.search);
+      const hashParams = new URLSearchParams(window.location.hash.replace(/^#/, ""));
+      const type = searchParams.get("type") || hashParams.get("type");
+      const accessToken = searchParams.get("access_token") || hashParams.get("access_token");
+      const refreshToken = searchParams.get("refresh_token") || hashParams.get("refresh_token");
+      const code = searchParams.get("code") || hashParams.get("code");
+      const recovery = type === "recovery" || accessToken || refreshToken || code;
+
+      if (recovery) {
+        console.log("password recovery detected", { type, accessToken, refreshToken, code });
+        try {
+          if (typeof supabase.auth.exchangeCodeForSession === "function") {
+            await supabase.auth.exchangeCodeForSession(window.location.href);
+          }
+        } catch (exchangeError) {
+          console.warn("password recovery exchange failed", exchangeError);
+        }
+
+        const { data: { session: recoverySession } } = await supabase.auth.getSession();
+        console.log("password recovery session", recoverySession);
+        setPasswordResetStage("confirm");
+
+        window.history.replaceState({}, document.title, window.location.pathname);
+      }
+
       // Check auth session
       const { data: { session } } = await supabase.auth.getSession();
       console.log("auth session restored", session);
