@@ -73,7 +73,7 @@ export default function App() {
   const [settings, setSettings] = useState(() => getStored("mh_settings", {
     company: "Workplace Challenge Demo",
     title: "Biggest Loser With a Twist",
-    joinCode: "MATT2026",
+    joinCode: "",
     startDate: "11 May 2026",
     endDate: "19 July 2026",
     status: "live",
@@ -757,8 +757,20 @@ export default function App() {
   async function signup(event) {
     event.preventDefault();
 
-    if (form.code.trim().toUpperCase() !== runtimeSettings.joinCode) {
-      alert("Incorrect join code. Demo code is " + runtimeSettings.joinCode);
+    const joinCode = form.code.trim().toUpperCase();
+    if (!joinCode) {
+      setAuthError("Incorrect join code. Please check with your challenge organiser.");
+      return;
+    }
+
+    const { data: companyRecord, error: companyError } = await supabase
+      .from("companies")
+      .select("*")
+      .eq("join_code", joinCode)
+      .single();
+
+    if (companyError || !companyRecord) {
+      setAuthError("Incorrect join code. Please check with your challenge organiser.");
       return;
     }
 
