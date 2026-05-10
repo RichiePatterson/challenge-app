@@ -94,6 +94,15 @@ export default function App() {
   const [newPassword, setNewPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
   const [activities, setActivities] = useState([]);
+
+  function clearPasswordResetState() {
+    setPasswordResetStage(null);
+    setResetEmail("");
+    setResetMessage("");
+    setResetError("");
+    setNewPassword("");
+    setConfirmPassword("");
+  }
   const [activityEdits, setActivityEdits] = useState([]);
   const [challengeSettings, setChallengeSettings] = useState({});
   const [company, setCompany] = useState(null);
@@ -294,7 +303,13 @@ export default function App() {
 
         const { data: { session: recoverySession } } = await supabase.auth.getSession();
         console.log("password recovery session", recoverySession);
-        setPasswordResetStage("confirm");
+        if (recoverySession?.user) {
+          setPasswordResetStage("confirm");
+          setResetEmail(recoverySession.user.email || resetEmail);
+        } else {
+          clearPasswordResetState();
+          setAuthMode("login");
+        }
 
         window.history.replaceState({}, document.title, window.location.pathname);
       }
@@ -975,7 +990,11 @@ export default function App() {
 
     const { data, error } = await supabase.auth.updateUser({ password: newPassword });
     if (error) {
-      setResetError(error.message || "Failed to update password.");
+      if (error.message?.includes("Auth session missing")) {
+        setResetError("This reset link has expired or is no longer valid. Please request a new password reset email.");
+      } else {
+        setResetError(error.message || "Failed to update password.");
+      }
       return;
     }
 
@@ -988,6 +1007,9 @@ export default function App() {
 
   function logout() {
     setCurrentUser(null);
+    clearPasswordResetState();
+    setAuthMode("login");
+    setAuthError("");
     supabase.auth.signOut();
   }
 
@@ -1576,7 +1598,7 @@ export default function App() {
                     <div className="rounded-2xl bg-emerald-50 p-4 text-sm font-semibold text-emerald-700">{resetMessage}</div>
                   )}
                   <button type="button" onClick={requestPasswordReset} className="w-full rounded-2xl bg-emerald-500 p-4 text-lg font-black text-white">Send reset email</button>
-                  <button type="button" onClick={() => { setPasswordResetStage(null); setResetError(""); setResetMessage(""); }} className="w-full rounded-2xl border border-slate-200 bg-white p-4 text-lg font-black text-slate-700">Back to login</button>
+                  <button type="button" onClick={clearPasswordResetState} className="w-full rounded-2xl border border-slate-200 bg-white p-4 text-lg font-black text-slate-700">Back to login</button>
                 </>
               )}
 
