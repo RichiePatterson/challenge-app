@@ -69,7 +69,7 @@ export default function App() {
   const [todayLogs, setTodayLogs] = useState(defaultLogs);
   const [tab, setTab] = useState("today");
   const [authMode, setAuthMode] = useState("login");
-  const [form, setForm] = useState({ name: "", email: "", password: "", team: "Workshop", code: "MATT2026" });
+  const [form, setForm] = useState({ name: "", email: "", password: "", team: "Workshop", code: "" });
   const [settings, setSettings] = useState(() => getStored("mh_settings", {
     company: "Workplace Challenge Demo",
     title: "Biggest Loser With a Twist",
@@ -1459,7 +1459,7 @@ export default function App() {
                     <option>Installers</option>
                     <option>Office</option>
                   </select>
-                  <input className="w-full rounded-2xl border p-4 font-semibold" placeholder="Join code" value={form.code} onChange={(event) => setForm({ ...form, code: event.target.value.toUpperCase() })} />
+                  <input className="w-full rounded-2xl border p-4 font-semibold" placeholder="Enter join code" value={form.code} onChange={(event) => setForm({ ...form, code: event.target.value.toUpperCase() })} />
                   {authError && authMode === "signup" && (
                     <div className="rounded-2xl bg-red-50 p-4 text-sm font-semibold text-red-700">{authError}</div>
                   )}
@@ -1477,7 +1477,6 @@ export default function App() {
                 </div>
               )}
             </form>
-            <p className="mt-5 rounded-2xl bg-slate-100 p-4 text-sm font-semibold text-slate-600">Demo employee: sam@example.com<br />Demo admin: richie@manualhandling.nz</p>
           </div>
         </div>
       </div>
