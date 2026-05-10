@@ -1,4 +1,5 @@
-import React, { useMemo, useState } from "react";
+import React, { useMemo, useState, useEffect } from "react";
+import { supabase } from "./supabase";
 
 const initialUsers = [
   { id: 1, name: "Sam", email: "sam@example.com", team: "Workshop", role: "employee", basePoints: 1480 },
@@ -62,13 +63,13 @@ function csvDownload(filename, rows) {
 
 export default function App() {
   const today = getToday();
-  const [users, setUsers] = useState(() => getStored("mh_users", initialUsers));
-  const [currentUser, setCurrentUser] = useState(() => getStored("mh_current_user", null));
-  const [allLogs, setAllLogs] = useState(() => getStored("mh_logs", {}));
-  const [submittedDays, setSubmittedDays] = useState(() => getStored("mh_submitted", {}));
+  const [users, setUsers] = useState([]);
+  const [pointsData, setPointsData] = useState([]);
+  const [currentUser, setCurrentUser] = useState(null);
+  const [todayLogs, setTodayLogs] = useState(defaultLogs);
   const [tab, setTab] = useState("today");
   const [authMode, setAuthMode] = useState("login");
-  const [form, setForm] = useState({ name: "", email: "", team: "Workshop", code: "MATT2026" });
+  const [form, setForm] = useState({ name: "", email: "", password: "", team: "Workshop", code: "MATT2026" });
   const [settings, setSettings] = useState(() => getStored("mh_settings", {
     company: "Workplace Challenge Demo",
     title: "Biggest Loser With a Twist",
@@ -76,135 +77,1350 @@ export default function App() {
     startDate: "11 May 2026",
     endDate: "19 July 2026",
     status: "live",
+    is_active: true,
   }));
   const [announcement, setAnnouncement] = useState(() => getStored("mh_announcement", {
     title: "Welcome to week 1",
     body: "Start simple: water, steps, sleep and one nutrition habit.",
   }));
+  const [statusMessage, setStatusMessage] = useState("");
+  const [statusMessageType, setStatusMessageType] = useState("success");
+  const [authError, setAuthError] = useState("");
+  const [authDiagnostics, setAuthDiagnostics] = useState([]);
+  const [activities, setActivities] = useState([]);
+  const [activityEdits, setActivityEdits] = useState([]);
+  const [challengeSettings, setChallengeSettings] = useState({});
+  const [company, setCompany] = useState(null);
+  const [teamFilter, setTeamFilter] = useState("All");
+  const [loading, setLoading] = useState(false);
+  const [toast, setToast] = useState("");
+  const [adminBuilderMessage, setAdminBuilderMessage] = useState("");
+  const [adminBuilderMessageType, setAdminBuilderMessageType] = useState("success");
 
+  function parseChallengeDate(value) {
+    if (!value) return null;
+    const parsed = new Date(value);
+    if (!isNaN(parsed.getTime())) return parsed;
+    return null;
+  }
+
+  function formatDaysBetween(from, to) {
+    const diff = Math.ceil((to.getTime() - from.getTime()) / (1000 * 60 * 60 * 24));
+    return diff;
+  }
+
+  function getDateKey(value) {
+    const date = new Date(value);
+    if (isNaN(date.getTime())) return null;
+    return date.toISOString().slice(0, 10);
+  }
+
+  function buildStreakMetrics(dateKeys, todayKey) {
+    const dates = Array.from(new Set(dateKeys.filter(Boolean))).sort();
+    const dateSet = new Set(dates);
+    let current = 0;
+    let cursor = new Date(todayKey);
+    while (dateSet.has(cursor.toISOString().slice(0, 10))) {
+      current += 1;
+      cursor.setDate(cursor.getDate() - 1);
+    }
+    let longest = 0;
+    dates.forEach((date) => {
+      const currentDate = new Date(date);
+      const previous = new Date(currentDate);
+      previous.setDate(previous.getDate() - 1);
+      const previousKey = previous.toISOString().slice(0, 10);
+      if (!dateSet.has(previousKey)) {
+        let streak = 1;
+        const next = new Date(currentDate);
+        while (true) {
+          next.setDate(next.getDate() + 1);
+          if (dateSet.has(next.toISOString().slice(0, 10))) {
+            streak += 1;
+          } else {
+            break;
+          }
+        }
+        longest = Math.max(longest, streak);
+      }
+    });
+    return {
+      currentStreak: current,
+      longestStreak: longest,
+      totalDays: dates.length,
+    };
+  }
+
+  async function loadCurrentUserByEmail(email) {
+    const { data: userData, error } = await supabase
+      .from("Users")
+      .select("*")
+      .eq("email", email)
+      .single();
+    console.log("user loaded", email, userData, error);
+    if (error) return null;
+    setCurrentUser(userData);
+    return userData;
+  }
+
+  function formatDiagnostics(lines) {
+    return lines.filter(Boolean).map((line) => String(line));
+  }
+
+  async function authRequestWithTimeout(requestPromise, timeoutMs = 8000) {
+    let timeoutId;
+    const timeoutPromise = new Promise((_, reject) => {
+      timeoutId = setTimeout(() => reject(new Error("Auth request timed out")), timeoutMs);
+    });
+    try {
+      return await Promise.race([requestPromise, timeoutPromise]);
+    } finally {
+      clearTimeout(timeoutId);
+    }
+  }
+
+  async function loadActivities(companyId) {
+    if (!companyId) {
+      setActivities([]);
+      setActivityEdits([]);
+      return [];
+    }
+
+    const { data, error } = await supabase
+      .from("challenge_activities")
+      .select("*")
+      .eq("company_id", companyId)
+      .order("sort_order", { ascending: true });
+
+    if (error) {
+      console.error("challenge activities load error", error);
+      setActivities([]);
+      setActivityEdits([]);
+      return [];
+    }
+
+    setActivities(data || []);
+    setActivityEdits(data || []);
+    return data || [];
+  }
+
+  async function loadCompanyData(companyId) {
+    if (!companyId) return null;
+    const { data, error } = await supabase
+      .from("companies")
+      .select("*")
+      .eq("id", companyId)
+      .single();
+    if (error) {
+      console.error("company load error", error);
+      return null;
+    }
+    setCompany(data);
+    return data;
+  }
+
+  async function loadChallengeSettings() {
+    const { data, error } = await supabase
+      .from("challenge_settings")
+      .select("*");
+    if (error) {
+      console.error("challenge settings load error", error);
+      return null;
+    }
+    const settingsObj = {};
+    const announcementObj = {};
+    data.forEach((item) => {
+      if (item.key === "is_active") {
+        settingsObj[item.key] = item.value === true || String(item.value).toLowerCase() === "true";
+      } else if (item.key === "team_colors") {
+        try {
+          settingsObj[item.key] = JSON.parse(item.value || "{}");
+        } catch {
+          settingsObj[item.key] = {};
+        }
+      } else if (item.key === "announcement_title") {
+        announcementObj.title = item.value || "";
+      } else if (item.key === "announcement_body") {
+        announcementObj.body = item.value || "";
+      } else {
+        settingsObj[item.key] = item.value;
+      }
+    });
+    if (announcementObj.title || announcementObj.body) {
+      setAnnouncement((prev) => ({ ...prev, ...announcementObj }));
+    }
+    setChallengeSettings(settingsObj);
+    setSettings((prev) => ({ ...prev, ...settingsObj }));
+    return settingsObj;
+  }
+
+  function getActivityKey(activity) {
+    return activity.activity_key || activity.activity_type || activity.key || String(activity.id);
+  }
+
+  function getActivityLabel(activityType) {
+    const activity = activities.find((item) => getActivityKey(item) === activityType);
+    if (activity) return activity.activity_name || activity.label || activity.description || activityType;
+    const habit = habits.find((item) => item.key === activityType);
+    return habit?.label || activityType;
+  }
+
+  useEffect(() => {
+    async function loadData() {
+      // Check auth session
+      const { data: { session } } = await supabase.auth.getSession();
+      console.log("auth session restored", session);
+      if (session?.user) {
+        const user = await loadCurrentUserByEmail(session.user.email);
+        if (user?.company_id) {
+          await loadCompanyData(user.company_id);
+          await loadActivities(user.company_id);
+        }
+      }
+
+      await loadChallengeSettings();
+
+      // Load users with points
+      const { data: usersData, error: usersError } = await supabase
+        .from("Users")
+        .select("*");
+
+      if (usersError) {
+        console.error(usersError);
+        return;
+      }
+
+      // Load points_log and calculate totals
+      const { data: pointsData, error: pointsError } = await supabase
+        .from("points_log")
+        .select("user_id, points, created_at, log_date, activity_type, activity_name");
+
+      if (pointsError) {
+        console.error(pointsError);
+        setUsers(usersData.map(u => ({ ...u, points: 0 })));
+        setPointsData([]);
+        return;
+      }
+
+      setPointsData(pointsData);
+
+      const pointsMap = {};
+      pointsData.forEach(p => {
+        pointsMap[p.user_id] = (pointsMap[p.user_id] || 0) + p.points;
+      });
+
+      const usersWithPoints = usersData.map(u => ({
+        ...u,
+        points: pointsMap[u.id] || 0
+      })).sort((a, b) => b.points - a.points);
+
+      setUsers(usersWithPoints);
+    }
+
+    loadData();
+
+    // Listen for auth changes
+    const { data: { subscription } } = supabase.auth.onAuthStateChange(async (event, session) => {
+      console.log("auth state changed", event, session);
+      if (session?.user) {
+        const user = await loadCurrentUserByEmail(session.user.email);
+        if (user?.company_id) {
+          await loadCompanyData(user.company_id);
+          await loadActivities(user.company_id);
+        }
+      } else {
+        setCurrentUser(null);
+        setCompany(null);
+        setActivities([]);
+      }
+    });
+
+    return () => subscription.unsubscribe();
+  }, []);
+
+  const activityDefaults = useMemo(() => {
+    if (!activities.length) return defaultLogs;
+    const defaults = {};
+    activities.forEach((activity) => {
+      const key = activity.activity_key || activity.activity_type || activity.key || String(activity.id);
+      defaults[key] = false;
+    });
+    return defaults;
+  }, [activities]);
+
+  const activityPoints = useMemo(() => {
+    if (!activities.length) return pointValues;
+    const pointsMap = {};
+    activities.forEach((activity) => {
+      const key = activity.activity_key || activity.activity_type || activity.key || String(activity.id);
+      pointsMap[key] = activity.points || 10;
+    });
+    return pointsMap;
+  }, [activities]);
+
+  const habitActivities = useMemo(() => {
+    if (activities.length) {
+      return activities.filter((activity) => !activity.activity_type || activity.activity_type === "habit" || activity.activity_type === "daily");
+    }
+    return habits.map((habit, index) => ({
+      id: `fallback-${index}`,
+      activity_key: habit.key,
+      activity_type: "habit",
+      activity_name: habit.key,
+      description: habit.target,
+      points: pointValues[habit.key] || 10,
+      is_active: true,
+      sort_order: index,
+    }));
+  }, [activities]);
+
+  const workoutActivities = useMemo(() => {
+    if (activities.length) {
+      return activities.filter((activity) => activity.activity_type === "workout");
+    }
+    return workouts.map((workout, index) => ({
+      id: `fallback-w-${index}`,
+      activity_key: `workout-${index}`,
+      activity_type: "workout",
+      activity_name: `workout-${index}`,
+      description: `${workout.type} · ${workout.duration}`,
+      points: workout.points,
+      is_active: true,
+      sort_order: index,
+    }));
+  }, [activities]);
+
+  useEffect(() => {
+    if (!currentUser) {
+      setTodayLogs(activityDefaults);
+      return;
+    }
+
+    if (pointsData.length > 0) {
+      const userTodayPoints = pointsData.filter((p) => p.user_id === currentUser.id && p.log_date === today);
+      const logs = { ...activityDefaults };
+      userTodayPoints.forEach((p) => {
+        if (Object.prototype.hasOwnProperty.call(logs, p.activity_name)) {
+          logs[p.activity_name] = true;
+        }
+      });
+      setTodayLogs(logs);
+    }
+  }, [currentUser, pointsData, today, activityDefaults]);
+
+  const runtimeSettings = { ...settings, ...(challengeSettings || {}) };
   const isAdmin = currentUser?.role === "admin";
-  const userLogKey = currentUser ? `${currentUser.id}_${today}` : "";
-  const todayLogs = allLogs[userLogKey] || defaultLogs;
-  const daySubmitted = submittedDays[userLogKey] || false;
-  const challengeLive = settings.status === "live";
+  const startDateObj = parseChallengeDate(runtimeSettings.startDate);
+  const endDateObj = parseChallengeDate(runtimeSettings.endDate);
+  const todayDate = new Date(today);
+  todayDate.setHours(0, 0, 0, 0);
+  const challengeActive = runtimeSettings.is_active !== false;
+  const beforeChallenge = Boolean(startDateObj && todayDate < startDateObj);
+  const afterChallenge = Boolean(endDateObj && todayDate > endDateObj);
+  const challengeLive = challengeActive && !afterChallenge;
+  const challengeStatusMessage = beforeChallenge
+    ? `Challenge begins in ${formatDaysBetween(todayDate, startDateObj)} day${formatDaysBetween(todayDate, startDateObj) === 1 ? "" : "s"}`
+    : afterChallenge
+      ? "Challenge completed"
+      : !challengeActive
+        ? "Challenge is currently paused"
+        : "";
+
+  const alreadySubmittedToday = useMemo(() => {
+    if (!currentUser) return false;
+    return pointsData.some((p) => p.user_id === currentUser.id && p.log_date === today);
+  }, [pointsData, currentUser, today]);
+
+  const activityEditLocked = !challengeLive || alreadySubmittedToday;
 
   const todayPoints = useMemo(() => {
-    return Object.entries(todayLogs).reduce((total, [key, value]) => total + (value ? pointValues[key] : 0), 0);
-  }, [todayLogs]);
+    if (!currentUser) return 0;
+    return pointsData.filter(p => p.user_id === currentUser.id && p.log_date === today).reduce((sum, p) => sum + p.points, 0);
+  }, [pointsData, currentUser, today]);
 
-  const completedHabits = Object.values(todayLogs).filter(Boolean).length;
+  const currentUserDates = useMemo(() => {
+    if (!currentUser) return [];
+    const dates = Array.from(new Set(
+      pointsData
+        .filter((p) => p.user_id === currentUser.id)
+        .map((p) => p.log_date)
+    ));
+    return dates.sort();
+  }, [pointsData, currentUser]);
+
+  const totalDaysCompleted = useMemo(() => currentUserDates.length, [currentUserDates]);
+
+  const currentStreak = useMemo(() => {
+    if (!currentUserDates.length) return 0;
+    const dateSet = new Set(currentUserDates);
+    let streak = 0;
+    let current = new Date(todayDate);
+    while (true) {
+      const dateKey = current.toISOString().slice(0, 10);
+      if (dateSet.has(dateKey)) {
+        streak += 1;
+        current.setDate(current.getDate() - 1);
+      } else {
+        break;
+      }
+    }
+    return streak;
+  }, [currentUserDates, todayDate]);
+
+  const longestStreak = useMemo(() => {
+    if (!currentUserDates.length) return 0;
+    const dateSet = new Set(currentUserDates);
+    let longest = 0;
+    currentUserDates.forEach((date) => {
+      const current = new Date(date);
+      const previous = new Date(current);
+      previous.setDate(current.getDate() - 1);
+      const previousKey = previous.toISOString().slice(0, 10);
+      if (!dateSet.has(previousKey)) {
+        let streak = 1;
+        const next = new Date(current);
+        while (true) {
+          next.setDate(next.getDate() + 1);
+          if (dateSet.has(next.toISOString().slice(0, 10))) {
+            streak += 1;
+          } else {
+            break;
+          }
+        }
+        longest = Math.max(longest, streak);
+      }
+    });
+    return longest;
+  }, [currentUserDates]);
+
+  const weeklyCompletion = useMemo(() => {
+    if (!currentUser) return 0;
+    const weekStart = new Date(todayDate);
+    weekStart.setDate(weekStart.getDate() - 6);
+    const weekDates = new Set(
+      pointsData
+        .filter((p) => p.user_id === currentUser.id && new Date(p.log_date) >= weekStart)
+        .map((p) => p.log_date)
+    );
+    return Math.round((weekDates.size / 7) * 100);
+  }, [pointsData, currentUser, todayDate]);
+
+  const completedHabits = useMemo(() => {
+    if (!currentUser) return 0;
+    const userTodayPoints = pointsData.filter(p => p.user_id === currentUser.id && p.log_date === today);
+    const loggedHabits = new Set(userTodayPoints.map(p => p.activity_type));
+    return loggedHabits.size;
+  }, [pointsData, currentUser, today]);
+
+  const pointsByUser = useMemo(() => {
+    const map = {};
+    pointsData.forEach((p) => {
+      map[p.user_id] = (map[p.user_id] || 0) + p.points;
+    });
+    return map;
+  }, [pointsData]);
 
   const leaderboard = useMemo(() => {
-    return users
+    return (users || [])
       .filter((user) => user.role !== "admin")
       .map((user) => {
-        const key = `${user.id}_${today}`;
-        const log = allLogs[key] || defaultLogs;
-        const extra = Object.entries(log).reduce((total, [habit, done]) => total + (done ? pointValues[habit] : 0), 0);
-        return { ...user, points: (user.basePoints || 0) + extra, todayPoints: extra, submitted: Boolean(submittedDays[key]) };
+        const totalPoints = pointsByUser[user.id] || 0;
+        const todayPoints = (pointsData || []).filter(p => p.user_id === user.id && p.log_date === today).reduce((sum, p) => sum + p.points, 0);
+        const dateKeys = (pointsData || []).filter((p) => p.user_id === user.id).map((p) => p.log_date);
+        const streaks = buildStreakMetrics(dateKeys, today);
+        const weeklyStart = new Date(today);
+        weeklyStart.setDate(weeklyStart.getDate() - 6);
+        const weeklyCount = new Set(
+          (pointsData || []).filter((p) => p.user_id === user.id && new Date(p.log_date) >= weeklyStart).map((p) => p.log_date)
+        ).size;
+        return {
+          ...user,
+          points: totalPoints,
+          todayPoints,
+          currentStreak: streaks.currentStreak,
+          longestStreak: streaks.longestStreak,
+          completedDays: streaks.totalDays,
+          weeklyCompletion: Math.round((weeklyCount / 7) * 100),
+        };
       })
       .sort((a, b) => b.points - a.points);
-  }, [users, allLogs, submittedDays, today]);
+  }, [users, pointsByUser, pointsData, today]);
 
   const teamLeaderboard = useMemo(() => {
     const teams = {};
-    leaderboard.forEach((user) => {
-      if (!teams[user.team]) teams[user.team] = { team: user.team, total: 0, count: 0 };
-      teams[user.team].total += user.points;
-      teams[user.team].count += 1;
+    (users || []).forEach((user) => {
+      const totalPoints = pointsByUser[user.id] || 0;
+      const teamName = user.team || user.Team;
+      if (!teams[teamName]) teams[teamName] = { team: teamName, total: 0 };
+      teams[teamName].total += totalPoints;
     });
     return Object.values(teams)
-      .map((team) => ({ ...team, average: Math.round(team.total / team.count) }))
-      .sort((a, b) => b.average - a.average);
-  }, [leaderboard]);
+      .sort((a, b) => b.total - a.total);
+  }, [users, pointsByUser]);
 
-  function saveUsers(nextUsers) { setUsers(nextUsers); setStored("mh_users", nextUsers); }
-  function saveLogs(nextLogs) { setAllLogs(nextLogs); setStored("mh_logs", nextLogs); }
-  function saveSubmitted(nextSubmitted) { setSubmittedDays(nextSubmitted); setStored("mh_submitted", nextSubmitted); }
+  const totalPointsLogged = useMemo(() => pointsData.reduce((sum, p) => sum + p.points, 0), [pointsData]);
+  const todayHabitsSubmitted = useMemo(() => pointsData.filter((p) => p.log_date === today).length, [pointsData, today]);
+  const activeUsersCount = useMemo(() => {
+    const sevenDaysAgo = new Date();
+    sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
+    return new Set(pointsData.filter((p) => new Date(p.created_at) >= sevenDaysAgo).map((p) => p.user_id)).size;
+  }, [pointsData]);
+  const teamTotals = useMemo(() => {
+    const teams = {};
+    (users || []).forEach((user) => {
+      const total = pointsByUser[user.id] || 0;
+      const teamName = user.team || user.Team;
+      if (!teams[teamName]) teams[teamName] = { team: teamName, total: 0, count: 0 };
+      teams[teamName].total += total;
+      teams[teamName].count += 1;
+    });
+    return Object.values(teams)
+      .map((team) => ({ ...team, average: team.count ? Math.round(team.total / team.count) : 0 }))
+      .sort((a, b) => b.total - a.total);
+  }, [users, pointsByUser]);
+  const teamCount = useMemo(() => new Set(users.map((user) => user.team || user.Team)).size, [users]);
+  const topTeam = teamTotals[0]?.team || "—";
+  const teamColors = runtimeSettings.team_colors || {};
+  const teamOptions = useMemo(() => {
+    const teams = new Set(users.map((user) => user.team || user.Team).filter(Boolean));
+    return ["All", ...Array.from(teams).sort()];
+  }, [users]);
+  const employeeRows = useMemo(() => {
+    const sevenDaysAgo = new Date();
+    sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
+    return (users || [])
+      .filter((user) => user.role !== "admin")
+      .map((user) => {
+        const userPoints = pointsByUser[user.id] || 0;
+        const todayPoints = (pointsData || []).filter((p) => p.user_id === user.id && p.log_date === today).reduce((sum, p) => sum + p.points, 0);
+        const userLogs = (pointsData || []).filter((p) => p.user_id === user.id);
+        const lastActivityEntry = userLogs.slice().sort((a, b) => new Date(b.created_at) - new Date(a.created_at))[0];
+        const lastActivityDate = lastActivityEntry ? new Date(lastActivityEntry.created_at).toLocaleString() : "—";
+        const isActive = lastActivityEntry ? new Date(lastActivityEntry.created_at) >= sevenDaysAgo : false;
+        const userDates = Array.from(new Set(userLogs.map((p) => p.log_date))).sort();
+        let current = 0;
+        const dateSet = new Set(userDates);
+        let cursor = new Date(today);
+        while (dateSet.has(cursor.toISOString().slice(0, 10))) {
+          current += 1;
+          cursor.setDate(cursor.getDate() - 1);
+        }
+        return {
+          ...user,
+          totalPoints: userPoints,
+          todayPoints,
+          status: isActive ? "Active" : "Inactive",
+          lastActivityDate,
+          completedDays: userDates.length,
+          currentStreak: current,
+          teamColor: teamColors[user.team || user.Team] || "#94a3b8",
+        };
+      });
+  }, [users, pointsData, pointsByUser, today, teamColors]);
+  const filteredEmployeeRows = useMemo(() => {
+    return (employeeRows || []).filter((user) => teamFilter === "All" || (user.team || user.Team) === teamFilter);
+  }, [employeeRows, teamFilter]);
 
-  function login(event) {
+  const recentActivity = useMemo(() => {
+    return (pointsData || [])
+      .slice()
+      .sort((a, b) => new Date(b.created_at) - new Date(a.created_at))
+      .slice(0, 10)
+      .map((entry) => ({
+        ...entry,
+        userName: (users || []).find((u) => u.id === entry.user_id)?.name || "Unknown",
+      }));
+  }, [pointsData, users]);
+
+  const activityCount = useMemo(() => activities.length, [activities]);
+  const activeActivityCount = useMemo(
+    () => activities.filter((activity) => activity.is_active !== false).length,
+    [activities]
+  );
+
+  async function login(event) {
     event.preventDefault();
+    setAuthError("");
+    const diagnostics = ["Login clicked"];
+
     const email = form.email.trim().toLowerCase();
-    const found = users.find((user) => user.email.toLowerCase() === email);
-    if (!found) {
-      alert("No account found. Use Sign up first, or demo login sam@example.com / richie@manualhandling.nz");
-      return;
+    const password = form.password.trim();
+    diagnostics.push(`email used: ${email}`);
+    diagnostics.push(`password length: ${password.length}`);
+    setAuthDiagnostics(formatDiagnostics(diagnostics));
+
+    try {
+      diagnostics.push("calling supabase.auth.signInWithPassword");
+      console.log("login auth start", email);
+      setAuthDiagnostics(formatDiagnostics(diagnostics));
+      const { data, error } = await authRequestWithTimeout(supabase.auth.signInWithPassword({ email, password }));
+      console.log("login auth end", email, { error });
+      diagnostics.push(`login auth response: ${error ? error.message : "ok"}`);
+      setAuthDiagnostics(formatDiagnostics(diagnostics));
+
+      if (error) {
+        diagnostics.push(`Supabase auth error: ${String(error.message)}`);
+        diagnostics.push(`Supabase auth error details: ${JSON.stringify(error)}`);
+        setAuthDiagnostics(formatDiagnostics(diagnostics));
+        setAuthError(String(error.message || "Login failed."));
+        return;
+      }
+
+      const authUser = data?.user;
+      diagnostics.push(`auth user present: ${Boolean(authUser)}`);
+      setAuthDiagnostics(formatDiagnostics(diagnostics));
+      if (!authUser) {
+        diagnostics.push("Supabase auth error: no user returned");
+        setAuthDiagnostics(formatDiagnostics(diagnostics));
+        setAuthError("Login failed: no user returned.");
+        return;
+      }
+
+      diagnostics.push("login profile lookup start");
+      setAuthDiagnostics(formatDiagnostics(diagnostics));
+      const { data: user, error: lookupError } = await supabase
+        .from("Users")
+        .select("*")
+        .eq("email", email)
+        .maybeSingle();
+      diagnostics.push(`login profile lookup response: ${lookupError ? lookupError.message : user ? "found" : "not found"}`);
+      setAuthDiagnostics(formatDiagnostics(diagnostics));
+
+      if (lookupError) {
+        diagnostics.push(`profile lookup error: ${String(lookupError.message)}`);
+        diagnostics.push(`profile lookup error details: ${JSON.stringify(lookupError)}`);
+        setAuthDiagnostics(formatDiagnostics(diagnostics));
+        setAuthError(String(lookupError.message));
+        return;
+      }
+
+      let profile = user;
+      if (!profile) {
+        const name = email.split("@")[0];
+        const payload = { id: authUser.id, email, name, Team: "Office", role: "employee" };
+        diagnostics.push("login profile payload creation");
+        diagnostics.push(`profile payload: ${JSON.stringify(payload)}`);
+        diagnostics.push("calling Users.insert");
+        setAuthDiagnostics(formatDiagnostics(diagnostics));
+
+        const { data: insertData, error: insertError } = await supabase
+          .from("Users")
+          .insert([payload])
+          .select()
+          .single();
+        diagnostics.push(`login profile insert response: ${insertError ? insertError.message : "ok"}`);
+        setAuthDiagnostics(formatDiagnostics(diagnostics));
+
+        if (insertError) {
+          diagnostics.push(`profile insert error: ${String(insertError.message)}`);
+          diagnostics.push(`profile insert error details: ${JSON.stringify(insertError)}`);
+          diagnostics.push(`profile insert error code: ${insertError.code || "none"}`);
+          setAuthDiagnostics(formatDiagnostics(diagnostics));
+          setAuthError(String(insertError.message));
+          return;
+        }
+
+        profile = insertData;
+        diagnostics.push("profile repair success");
+        setAuthDiagnostics(formatDiagnostics(diagnostics));
+      } else {
+        diagnostics.push("login profile lookup success");
+        setAuthDiagnostics(formatDiagnostics(diagnostics));
+      }
+
+      if (profile?.company_id) {
+        diagnostics.push("loading company data");
+        setAuthDiagnostics(formatDiagnostics(diagnostics));
+        await loadCompanyData(profile.company_id);
+        await loadActivities(profile.company_id);
+      }
+
+      setCurrentUser(profile);
+      diagnostics.push("setCurrentUser done");
+      setAuthDiagnostics(formatDiagnostics(diagnostics));
+      setAuthMode("login");
+      diagnostics.push('setAuthMode("login")');
+      setAuthDiagnostics(formatDiagnostics(diagnostics));
+      setAuthError("");
+    } catch (error) {
+      console.error("Login error", error);
+      const message = String(error?.message || "Login failed. Please try again.");
+      diagnostics.push(`exception message: ${message}`);
+      diagnostics.push(`exception json: ${JSON.stringify(error)}`);
+      setAuthDiagnostics(formatDiagnostics(diagnostics));
+      setAuthError(message);
+    } finally {
+      setAuthDiagnostics(formatDiagnostics(diagnostics));
     }
-    setCurrentUser(found);
-    setStored("mh_current_user", found);
   }
 
-  function signup(event) {
+  async function signup(event) {
     event.preventDefault();
-    if (form.code.trim().toUpperCase() !== settings.joinCode) {
-      alert("Incorrect join code. Demo code is " + settings.joinCode);
+
+    if (form.code.trim().toUpperCase() !== runtimeSettings.joinCode) {
+      alert("Incorrect join code. Demo code is " + runtimeSettings.joinCode);
       return;
     }
+
     const email = form.email.trim().toLowerCase();
-    const existing = users.find((user) => user.email.toLowerCase() === email);
-    if (existing) {
-      setCurrentUser(existing);
-      setStored("mh_current_user", existing);
+    const password = form.password.trim();
+    const name = form.name.trim() || email.split("@")[0];
+
+    if (password.length < 6) {
+      setAuthError("Password must be at least 6 characters.");
       return;
     }
-    const newUser = {
-      id: Date.now(),
-      name: form.name.trim() || email.split("@")[0],
-      email,
-      team: form.team,
-      role: "employee",
-      basePoints: 0,
-    };
-    const nextUsers = [...users, newUser];
-    saveUsers(nextUsers);
-    setCurrentUser(newUser);
-    setStored("mh_current_user", newUser);
+
+    const diagnostics = ["Signup clicked"];
+    const emailLower = email;
+    diagnostics.push(`email used: ${emailLower}`);
+    diagnostics.push(`password length: ${password.length}`);
+    setAuthDiagnostics(formatDiagnostics(diagnostics));
+
+    try {
+      diagnostics.push("calling supabase.auth.signUp");
+      console.log("signup auth start", emailLower);
+      setAuthDiagnostics(formatDiagnostics(diagnostics));
+      let data, error;
+      try {
+        ({ data, error } = await authRequestWithTimeout(supabase.auth.signUp({ email: emailLower, password })));
+      } catch (timeoutError) {
+        console.log("signup auth timeout", emailLower, timeoutError);
+        diagnostics.push("Supabase auth error: Auth request timed out");
+        diagnostics.push("Signup may have created the auth user but timed out. Try logging in.");
+        setAuthDiagnostics(formatDiagnostics(diagnostics));
+        setAuthError("Auth request timed out");
+        return;
+      }
+      console.log("signup auth end", emailLower, { error });
+      diagnostics.push(`signup auth response: ${error ? error.message : "ok"}`);
+      setAuthDiagnostics(formatDiagnostics(diagnostics));
+
+      if (error) {
+        const message = String(error.message || "Signup failed.");
+        diagnostics.push(`Supabase auth error: ${message}`);
+        diagnostics.push(`Supabase auth error details: ${JSON.stringify(error)}`);
+        setAuthDiagnostics(formatDiagnostics(diagnostics));
+        setAuthError(message);
+        if (/rate limit/i.test(message)) {
+          return;
+        }
+        if (/already.*exists|already.*registered|duplicate/i.test(message)) {
+          setAuthMode("login");
+          diagnostics.push('setAuthMode("login")');
+          setAuthDiagnostics(formatDiagnostics(diagnostics));
+          return;
+        }
+        return;
+      }
+
+      const userId = data?.user?.id;
+      diagnostics.push(`auth user id: ${userId || "none"}`);
+      setAuthDiagnostics(formatDiagnostics(diagnostics));
+      if (!userId) {
+        diagnostics.push("Signup succeeded but no user id returned");
+        setAuthDiagnostics(formatDiagnostics(diagnostics));
+        setAuthError("Account created! Please check your email and then login.");
+        setAuthMode("login");
+        diagnostics.push('setAuthMode("login")');
+        setAuthDiagnostics(formatDiagnostics(diagnostics));
+        return;
+      }
+
+      diagnostics.push("signup profile lookup start");
+      setAuthDiagnostics(formatDiagnostics(diagnostics));
+      const { data: existingUser, error: existingError } = await supabase
+        .from("Users")
+        .select("*")
+        .eq("id", userId)
+        .maybeSingle();
+      diagnostics.push(`signup profile lookup response: ${existingError ? existingError.message : existingUser ? "found" : "not found"}`);
+      setAuthDiagnostics(formatDiagnostics(diagnostics));
+
+      if (existingError) {
+        diagnostics.push(`profile lookup error: ${String(existingError.message)}`);
+        diagnostics.push(`profile lookup error details: ${JSON.stringify(existingError)}`);
+        setAuthDiagnostics(formatDiagnostics(diagnostics));
+        setAuthError(String(existingError.message));
+        return;
+      }
+
+      if (!existingUser) {
+        const payload = { id: userId, email: emailLower, name, Team: form.team, role: "employee" };
+        diagnostics.push("signup profile payload creation");
+        diagnostics.push(`profile payload: ${JSON.stringify(payload)}`);
+        diagnostics.push("calling Users.insert");
+        setAuthDiagnostics(formatDiagnostics(diagnostics));
+
+        const { data: insertData, error: insertError } = await supabase
+          .from("Users")
+          .insert([payload])
+          .select()
+          .single();
+        diagnostics.push(`signup profile insert response: ${insertError ? insertError.message : "ok"}`);
+        setAuthDiagnostics(formatDiagnostics(diagnostics));
+
+        if (insertError) {
+          console.error("Profile insert error", insertError);
+          diagnostics.push(`profile insert error: ${String(insertError.message)}`);
+          diagnostics.push(`profile insert error details: ${JSON.stringify(insertError)}`);
+          diagnostics.push(`profile insert error code: ${insertError.code || "none"}`);
+          setAuthDiagnostics(formatDiagnostics(diagnostics));
+          setAuthError(String(insertError.message));
+          return;
+        }
+
+        diagnostics.push("profile insert success");
+        setAuthDiagnostics(formatDiagnostics(diagnostics));
+      } else {
+        diagnostics.push("signup profile lookup success");
+        setAuthDiagnostics(formatDiagnostics(diagnostics));
+      }
+
+      setAuthError("Account created successfully! Please login using your email and password.");
+      setAuthMode("login");
+      diagnostics.push('setAuthMode("login")');
+      setAuthDiagnostics(formatDiagnostics(diagnostics));
+    } catch (error) {
+      console.error("Signup error", error);
+      const message = String(error?.message || "Signup failed. Please try again.");
+      diagnostics.push(`exception message: ${message}`);
+      diagnostics.push(`exception json: ${JSON.stringify(error)}`);
+      setAuthDiagnostics(formatDiagnostics(diagnostics));
+      setAuthError(message);
+    } finally {
+      setAuthDiagnostics(formatDiagnostics(diagnostics));
+    }
   }
 
   function logout() {
     setCurrentUser(null);
-    localStorage.removeItem("mh_current_user");
+    supabase.auth.signOut();
   }
 
-  function toggleHabit(key) {
-    if (!challengeLive || daySubmitted) return;
-    const next = { ...allLogs, [userLogKey]: { ...todayLogs, [key]: !todayLogs[key] } };
-    saveLogs(next);
+  async function toggleHabit(key) {
+    if (activityEditLocked || !currentUser) return;
+
+    const wasDone = todayLogs[key];
+    const next = { ...todayLogs, [key]: !wasDone };
+    setTodayLogs(next);
   }
 
-  function submitDay() {
-    if (!challengeLive || daySubmitted) return;
-    saveSubmitted({ ...submittedDays, [userLogKey]: true });
+  async function submitDay() {
+    if (!currentUser) return;
+    if (!challengeLive) {
+      setStatusMessageType("error");
+      setStatusMessage(challengeStatusMessage || "Submissions are currently locked.");
+      return;
+    }
+    if (alreadySubmittedToday) {
+      setStatusMessageType("info");
+      setStatusMessage("Today already submitted.");
+      return;
+    }
+    setStatusMessage("");
+
+    const selectedHabits = Object.entries(todayLogs)
+      .filter(([, value]) => value)
+      .map(([key]) => key);
+
+    console.log("selected habits", selectedHabits);
+
+    if (!selectedHabits.length) {
+      setStatusMessageType("error");
+      setStatusMessage("Select at least one habit before submitting.");
+      return;
+    }
+
+    const existingToday = new Set(
+      pointsData.filter((p) => p.user_id === currentUser.id && p.log_date === today).map((p) => p.activity_name)
+    );
+
+    const newHabits = selectedHabits.filter((key) => !existingToday.has(key));
+
+    if (!newHabits.length) {
+      setStatusMessageType("info");
+      setStatusMessage("You've already submitted these habits today.");
+      return;
+    }
+
+    const payload = newHabits.map((key) => {
+      const activity = activities.find((item) => getActivityKey(item) === key);
+      const activityType = activity?.activity_type || "habit";
+      return {
+        user_id: currentUser.id,
+        activity_type: activityType,
+        activity_name: key,
+        points: activityPoints[key] || 10,
+        log_date: today,
+      };
+    });
+
+    console.log("insert payload", payload);
+
+    const { data: insertData, error: insertError } = await supabase
+      .from("points_log")
+      .insert(payload)
+      .select();
+
+    console.log("insert response", insertData, insertError);
+
+    if (insertError) {
+      console.error("insert error", insertError);
+      if (insertError.code === "23505" || String(insertError.message).toLowerCase().includes("duplicate")) {
+        setStatusMessageType("info");
+        setStatusMessage("You've already submitted these habits today.");
+      } else {
+        setStatusMessageType("error");
+        setStatusMessage("Submit failed: " + insertError.message);
+      }
+      const { data: newPoints } = await supabase
+        .from("points_log")
+        .select("user_id, points, created_at, log_date, activity_type, activity_name");
+      if (newPoints) setPointsData(newPoints);
+      return;
+    }
+
+    const { data: newPoints, error: newPointsError } = await supabase
+      .from("points_log")
+      .select("user_id, points, created_at, log_date, activity_type, activity_name");
+
+    if (newPointsError) {
+      console.error("reload points error", newPointsError);
+      setStatusMessageType("error");
+      setStatusMessage("Submit succeeded, but failed to refresh totals.");
+      return;
+    }
+
+    setPointsData(newPoints);
+    setStatusMessageType("success");
+    setStatusMessage("Day submitted successfully.");
   }
 
   function exportLeaderboard() {
     csvDownload("leaderboard.csv", [
-      ["Rank", "Name", "Email", "Team", "Total points", "Today", "Submitted"],
-      ...leaderboard.map((user, index) => [index + 1, user.name, user.email, user.team, user.points, user.todayPoints, user.submitted ? "Yes" : "No"]),
+      ["Rank", "Name", "Email", "Team", "Total points", "Today"],
+      ...leaderboard.map((user, index) => [index + 1, user.name, user.email, user.team || user.Team, user.points, user.todayPoints]),
+    ]);
+  }
+
+  function exportUsersCsv() {
+    csvDownload("users.csv", [
+      ["Name", "Email", "Team", "Role", "Total points", "Today points", "Status", "Last activity"],
+      ...employeeRows.map((user) => [user.name, user.email, user.team || user.Team, user.role, user.totalPoints, user.todayPoints, user.status, user.lastActivityDate]),
+    ]);
+  }
+
+  function exportPointsLogCsv() {
+    csvDownload("points_log.csv", [
+      ["User", "Email", "Team", "Activity", "Points", "Log date", "Created at"],
+      ...(pointsData || []).map((entry) => [
+        (users || []).find((u) => u.id === entry.user_id)?.name || "Unknown",
+        (users || []).find((u) => u.id === entry.user_id)?.email || "",
+        (users || []).find((u) => u.id === entry.user_id)?.team || (users || []).find((u) => u.id === entry.user_id)?.Team || "",
+        entry.activity_name,
+        entry.points,
+        entry.log_date,
+        entry.created_at,
+      ]),
     ]);
   }
 
   function exportLogs() {
-    const rows = [["Date", "Name", "Email", "Team", "Nutrition", "Water", "Sleep", "Steps", "Workout", "Submitted"]];
-    Object.entries(allLogs).forEach(([key, log]) => {
-      const [userId, date] = key.split("_");
-      const user = users.find((item) => String(item.id) === String(userId));
-      if (!user) return;
-      rows.push([date, user.name, user.email, user.team, log.nutrition ? "Yes" : "No", log.water ? "Yes" : "No", log.sleep ? "Yes" : "No", log.steps ? "Yes" : "No", log.workout ? "Yes" : "No", submittedDays[key] ? "Yes" : "No"]);
-    });
-    csvDownload("daily-logs.csv", rows);
+    csvDownload("daily_logs.csv", [
+      ["Date", "Name", "Email", "Team", "Activity type", "Activity name", "Points"],
+      ...(pointsData || []).map((entry) => {
+        const user = (users || []).find((u) => u.id === entry.user_id) || {};
+        return [
+          entry.log_date,
+          user.name || "Unknown",
+          user.email || "",
+          user.team || "",
+          entry.activity_type || "",
+          entry.activity_name || "",
+          entry.points,
+        ];
+      }),
+    ]);
   }
 
-  function saveSettings(event) {
+  function exportLeaderboardCsv() {
+    csvDownload("leaderboard.csv", [
+      ["Rank", "Name", "Email", "Team", "Points", "Today points", "Current streak", "Completed days", "Weekly %"],
+      ...leaderboard.map((user, index) => [
+        index + 1,
+        user.name,
+        user.email,
+        user.team,
+        user.points,
+        user.todayPoints,
+        user.currentStreak || 0,
+        user.completedDays || 0,
+        user.weeklyCompletion || 0,
+      ]),
+    ]);
+  }
+
+  function exportStreakCsv() {
+    csvDownload("streaks.csv", [
+      ["Name", "Email", "Team", "Current streak", "Longest streak", "Total days completed", "Weekly completion %"],
+      ...users.filter((user) => user.role !== "admin").map((user) => {
+        const userLogs = pointsData.filter((p) => p.user_id === user.id);
+        const dates = Array.from(new Set(userLogs.map((p) => p.log_date))).sort();
+        const current = (() => {
+          const set = new Set(dates);
+          let count = 0;
+          let cursor = new Date(today);
+          while (set.has(cursor.toISOString().slice(0, 10))) {
+            count += 1;
+            cursor.setDate(cursor.getDate() - 1);
+          }
+          return count;
+        })();
+        const longest = (() => {
+          if (!dates.length) return 0;
+          const set = new Set(dates);
+          let best = 0;
+          dates.forEach((date) => {
+            const currentDate = new Date(date);
+            const prev = new Date(currentDate);
+            prev.setDate(prev.getDate() - 1);
+            if (!set.has(prev.toISOString().slice(0, 10))) {
+              let streak = 1;
+              const next = new Date(currentDate);
+              while (true) {
+                next.setDate(next.getDate() + 1);
+                if (set.has(next.toISOString().slice(0, 10))) {
+                  streak += 1;
+                } else {
+                  break;
+                }
+              }
+              best = Math.max(best, streak);
+            }
+          });
+          return best;
+        })();
+        const weekStart = new Date(today);
+        weekStart.setDate(weekStart.getDate() - 6);
+        const weeklyDates = new Set(userLogs.filter((p) => new Date(p.log_date) >= weekStart).map((p) => p.log_date));
+        return [
+          user.name,
+          user.email,
+          user.team,
+          current,
+          longest,
+          dates.length,
+          Math.round((weeklyDates.size / 7) * 100),
+        ];
+      } ),
+    ]);
+  }
+
+  async function saveSettings(event) {
     event.preventDefault();
     setStored("mh_settings", settings);
-    alert("Settings saved");
+
+    // Upsert challenge_settings
+    const keysToSave = ["company", "title", "joinCode", "startDate", "endDate", "status", "is_active", "team_colors"];
+    const upsertData = keysToSave.map(key => ({
+      company_id: currentUser.company_id,
+      key,
+      value: key === "is_active"
+        ? String(settings.is_active === true)
+        : key === "team_colors"
+          ? JSON.stringify(settings.team_colors || {})
+          : settings[key] || "",
+    }));
+
+    const { error } = await supabase
+      .from("challenge_settings")
+      .upsert(upsertData, { onConflict: "company_id,key" });
+
+    if (error) {
+      console.error("save challenge settings error", error);
+      alert("Settings saved locally, but failed to update database.");
+      return;
+    }
+
+    alert("Settings saved.");
+    await loadChallengeSettings(); // Reload to sync
   }
 
-  function saveAnnouncement(event) {
+  function updateActivityField(index, field, value) {
+    setActivityEdits((current) => current.map((activity, idx) => idx === index ? { ...activity, [field]: value } : activity));
+  }
+
+  function addActivityRow() {
+    setActivityEdits((current) => [
+      ...current,
+      {
+        activity_key: "",
+        activity_type: "habit",
+        activity_name: "",
+        description: "",
+        points: 10,
+        is_active: true,
+        sort_order: current.length + 1,
+        company_id: currentUser?.company_id,
+      },
+    ]);
+  }
+
+  function removeActivityRow(index) {
+    setActivityEdits((current) => current.filter((_, idx) => idx !== index));
+  }
+
+  function resetActivityDefaults() {
+    setActivityEdits(habits.map((habit, index) => ({
+      activity_key: habit.key,
+      activity_name: habit.label,
+      activity_type: "habit",
+      description: habit.target,
+      points: 10,
+      is_active: true,
+      sort_order: index + 1,
+      company_id: currentUser?.company_id,
+    })));
+    setAdminBuilderMessageType("info");
+    setAdminBuilderMessage("Reset to default habits locally. Click Save activities to persist.");
+  }
+
+  async function saveActivities(event) {
+    event.preventDefault();
+    setAdminBuilderMessage("");
+
+    if (!currentUser?.company_id) {
+      setAdminBuilderMessageType("error");
+      setAdminBuilderMessage("You need a company assigned to save activities.");
+      return;
+    }
+
+    // Validation
+    const keys = activityEdits.map((a) => String(a.activity_key || "").trim());
+    const labels = activityEdits.map((a) => String(a.label || "").trim());
+
+    if (keys.some((key) => !key)) {
+      setAdminBuilderMessageType("error");
+      setAdminBuilderMessage("All activities must have a unique key.");
+      return;
+    }
+
+    if (new Set(keys).size !== keys.length) {
+      setAdminBuilderMessageType("error");
+      setAdminBuilderMessage("All activity keys must be unique.");
+      return;
+    }
+
+    if (labels.some((label) => !label)) {
+      setAdminBuilderMessageType("error");
+      setAdminBuilderMessage("All activities must have a label.");
+      return;
+    }
+
+    const payload = activityEdits.map((activity, index) => {
+      const basePayload = {
+        company_id: currentUser.company_id,
+        activity_key: String(activity.activity_key || "").trim(),
+        label: String(activity.label || "").trim(),
+        description: String(activity.description || "").trim(),
+        activity_type: String(activity.activity_type || "habit").trim(),
+        is_active: activity.is_active !== false,
+        points: Number(activity.points) || 10,
+        sort_order: Number.isNaN(Number(activity.sort_order)) ? index : Number(activity.sort_order),
+      };
+      return activity.id ? { id: activity.id, ...basePayload } : basePayload;
+    });
+
+    console.log("saveActivities payload", payload);
+
+    const existingRows = payload.filter((item) => item.id != null);
+    const newRows = payload.filter((item) => item.id == null);
+    let savedActivities = [];
+
+    if (existingRows.length) {
+      const updateResponses = await Promise.all(existingRows.map(async (item) => {
+        const { data, error } = await supabase
+          .from("challenge_activities")
+          .update({
+            activity_key: item.activity_key,
+            label: item.label,
+            description: item.description,
+            activity_type: item.activity_type,
+            is_active: item.is_active,
+            points: item.points,
+            sort_order: item.sort_order,
+          })
+          .eq("id", item.id)
+          .select()
+          .single();
+        console.log("update activity response", { item, data, error });
+        return { data, error, item };
+      }));
+
+      const updateErrors = updateResponses.filter((response) => response.error);
+      if (updateErrors.length) {
+        const message = updateErrors[0].error.message || "Failed to update challenge activities.";
+        console.error("save activities update error", updateErrors);
+        setAdminBuilderMessageType("error");
+        setAdminBuilderMessage(message);
+        return;
+      }
+      savedActivities.push(...updateResponses.map((response) => response.data));
+    }
+
+    if (newRows.length) {
+      const { data, error } = await supabase
+        .from("challenge_activities")
+        .insert(newRows)
+        .select();
+      console.log("insert activity response", { data, error });
+      if (error) {
+        const message = error.message || "Failed to insert challenge activities.";
+        console.error("save activities insert error", error);
+        setAdminBuilderMessageType("error");
+        setAdminBuilderMessage(message);
+        return;
+      }
+      savedActivities.push(...(data || []));
+    }
+
+    const finalActivities = savedActivities.length ? savedActivities : payload;
+    setActivities(finalActivities);
+    setActivityEdits(finalActivities);
+    setAdminBuilderMessageType("success");
+    setAdminBuilderMessage("Activities saved successfully.");
+  }
+
+  async function saveAnnouncement(event) {
     event.preventDefault();
     setStored("mh_announcement", announcement);
-    alert("Announcement saved");
+
+    const upsertData = [
+      { company_id: currentUser.company_id, key: "announcement_title", value: announcement.title || "" },
+      { company_id: currentUser.company_id, key: "announcement_body", value: announcement.body || "" },
+    ];
+
+    const { error } = await supabase
+      .from("challenge_settings")
+      .upsert(upsertData, { onConflict: "company_id,key" });
+
+    if (error) {
+      console.error("save announcement error", error);
+      alert("Announcement saved locally, but failed to update database.");
+      return;
+    }
+
+    setToast("Announcement saved.");
+  }
+
+  async function refreshUsers() {
+    const { data: usersData, error } = await supabase
+      .from("Users")
+      .select("*");
+    if (error) {
+      console.error("refresh users error", error);
+      return;
+    }
+    const pointsMap = {};
+    pointsData.forEach((p) => {
+      pointsMap[p.user_id] = (pointsMap[p.user_id] || 0) + p.points;
+    });
+    const usersWithPoints = usersData.map((u) => ({
+      ...u,
+      points: pointsMap[u.id] || 0,
+    })).sort((a, b) => b.points - a.points);
+    setUsers(usersWithPoints);
+  }
+
+  async function updateUser(userId, updates) {
+    const { data, error } = await supabase
+      .from("Users")
+      .update(updates)
+      .eq("id", userId)
+      .select()
+      .single();
+    if (error) {
+      console.error("update user error", error);
+      alert("Failed to update user: " + error.message);
+      return null;
+    }
+    await refreshUsers();
+    return data;
+  }
+
+  async function resetUserPoints(userId) {
+    if (!window.confirm("Reset points for this user? This cannot be undone.")) return;
+    const { error } = await supabase
+      .from("points_log")
+      .delete()
+      .eq("user_id", userId);
+    if (error) {
+      console.error("reset user points error", error);
+      alert("Failed to reset points: " + error.message);
+      return;
+    }
+    const { data: newPoints, error: newPointsError } = await supabase
+      .from("points_log")
+      .select("user_id, points, created_at, log_date, activity_type, activity_name");
+    if (!newPointsError) setPointsData(newPoints);
+    await refreshUsers();
+    setToast("User points reset.");
+  }
+
+  async function deleteUser(userId) {
+    if (!window.confirm("Delete this user and their points? This cannot be undone.")) return;
+    const { error: deletePointsError } = await supabase
+      .from("points_log")
+      .delete()
+      .eq("user_id", userId);
+    if (deletePointsError) {
+      console.error("delete user points error", deletePointsError);
+      alert("Failed to delete user points: " + deletePointsError.message);
+      return;
+    }
+    const { error } = await supabase
+      .from("Users")
+      .delete()
+      .eq("id", userId);
+    if (error) {
+      console.error("delete user error", error);
+      alert("Failed to delete user: " + error.message);
+      return;
+    }
+    await refreshUsers();
+    setToast("User deleted.");
+  }
+
+  async function toggleUserRole(user) {
+    const newRole = user.role === "admin" ? "employee" : "admin";
+    if (!window.confirm(`Change role for ${user.name} to ${newRole}?`)) return;
+    await updateUser(user.id, { role: newRole });
+    setToast(`User role updated to ${newRole}.`);
+  }
+
+  async function toggleUserActive(user) {
+    const newRole = user.role === "inactive" ? "employee" : "inactive";
+    if (!window.confirm(`${newRole === "inactive" ? "Deactivate" : "Reactivate"} ${user.name}?`)) return;
+    await updateUser(user.id, { role: newRole });
+    setToast(`User ${newRole === "inactive" ? "deactivated" : "reactivated"}.`);
+  }
+
+  async function moveUserTeam(userId, team) {
+    await updateUser(userId, { team });
+    setToast("User team updated.");
+  }
+
+  function addTeam(name, color) {
+    const teamColors = settings.team_colors || {};
+    const next = { ...teamColors, [name]: color };
+    setSettings({ ...settings, team_colors: next });
+    setToast("Team saved.");
+  }
+
+  function setTeamColor(team, color) {
+    const teamColors = settings.team_colors || {};
+    setSettings({ ...settings, team_colors: { ...teamColors, [team]: color } });
   }
 
   if (!currentUser) {
@@ -213,12 +1429,12 @@ export default function App() {
         <div className="mx-auto grid max-w-6xl overflow-hidden rounded-[2rem] bg-white shadow-2xl md:grid-cols-2">
           <div className="bg-slate-950 p-8 text-white md:p-12">
             <div className="mb-4 inline-flex rounded-full border border-white/20 bg-white/10 px-3 py-1 text-xs font-black uppercase text-emerald-200">Manual Handling NZ</div>
-            <h1 className="text-5xl font-black leading-none md:text-7xl">{settings.title}</h1>
+            <h1 className="text-5xl font-black leading-none md:text-7xl">{runtimeSettings.title}</h1>
             <p className="mt-5 max-w-md text-lg text-slate-300">Online workplace wellbeing challenge for logging habits, scoring points, team competition and employer reporting.</p>
             <div className="mt-8 grid gap-3 text-sm font-bold text-slate-200">
-              <div className="rounded-2xl bg-white/10 p-4">Company: {settings.company}</div>
-              <div className="rounded-2xl bg-white/10 p-4">Starts: {settings.startDate}</div>
-              <div className="rounded-2xl bg-white/10 p-4">Join code: {settings.joinCode}</div>
+              <div className="rounded-2xl bg-white/10 p-4">Company: {runtimeSettings.company}</div>
+              <div className="rounded-2xl bg-white/10 p-4">Starts: {runtimeSettings.startDate}</div>
+              <div className="rounded-2xl bg-white/10 p-4">Join code: {runtimeSettings.joinCode}</div>
             </div>
           </div>
           <div className="p-8 md:p-12">
@@ -226,11 +1442,15 @@ export default function App() {
               <button onClick={() => setAuthMode("login")} className={`rounded-xl py-3 font-black ${authMode === "login" ? "bg-white shadow" : "text-slate-500"}`}>Login</button>
               <button onClick={() => setAuthMode("signup")} className={`rounded-xl py-3 font-black ${authMode === "signup" ? "bg-white shadow" : "text-slate-500"}`}>Sign up</button>
             </div>
-            <form onSubmit={authMode === "login" ? login : signup} className="space-y-4">
+            <form className="space-y-4">
               {authMode === "signup" && (
                 <input className="w-full rounded-2xl border p-4 font-semibold" placeholder="Name" value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} />
               )}
               <input className="w-full rounded-2xl border p-4 font-semibold" type="email" required placeholder="Email" value={form.email} onChange={(event) => setForm({ ...form, email: event.target.value })} />
+              <input className="w-full rounded-2xl border p-4 font-semibold" type="password" required placeholder="Password" value={form.password} onChange={(event) => setForm({ ...form, password: event.target.value })} />
+              {authError && authMode === "login" && (
+                <div className="rounded-2xl bg-red-50 p-4 text-sm font-semibold text-red-700">{authError}</div>
+              )}
               {authMode === "signup" && (
                 <>
                   <select className="w-full rounded-2xl border p-4 font-semibold" value={form.team} onChange={(event) => setForm({ ...form, team: event.target.value })}>
@@ -240,9 +1460,22 @@ export default function App() {
                     <option>Office</option>
                   </select>
                   <input className="w-full rounded-2xl border p-4 font-semibold" placeholder="Join code" value={form.code} onChange={(event) => setForm({ ...form, code: event.target.value.toUpperCase() })} />
+                  {authError && authMode === "signup" && (
+                    <div className="rounded-2xl bg-red-50 p-4 text-sm font-semibold text-red-700">{authError}</div>
+                  )}
                 </>
               )}
-              <button className="w-full rounded-2xl bg-emerald-500 p-4 text-lg font-black text-white">{authMode === "login" ? "Login" : "Join challenge"}</button>
+              <button type="button" onClick={(event) => { setAuthDiagnostics([authMode === "login" ? "Login clicked" : "Signup clicked"]); setAuthError(""); if (authMode === "login") login(event); else signup(event); }} className="w-full rounded-2xl bg-emerald-500 p-4 text-lg font-black text-white">{authMode === "login" ? "Login" : "Join challenge"}</button>
+              {authDiagnostics.length > 0 && (
+                <div className="mt-4 rounded-2xl bg-slate-100 p-4 text-sm text-slate-700">
+                  <div className="font-black uppercase text-slate-500">Auth diagnostics</div>
+                  <ul className="list-disc space-y-1 pl-5 pt-3 text-xs">
+                    {authDiagnostics.map((line, index) => (
+                      <li key={index}>{line}</li>
+                    ))}
+                  </ul>
+                </div>
+              )}
             </form>
             <p className="mt-5 rounded-2xl bg-slate-100 p-4 text-sm font-semibold text-slate-600">Demo employee: sam@example.com<br />Demo admin: richie@manualhandling.nz</p>
           </div>
@@ -256,11 +1489,9 @@ export default function App() {
       <div className="mx-auto max-w-6xl bg-slate-100 pb-20 shadow-2xl md:min-h-screen">
         <header className="rounded-b-[2rem] bg-slate-950 p-6 text-white md:p-10">
           <div className="flex items-start justify-between gap-4">
-            <div>
               <div className="mb-3 inline-flex rounded-full border border-white/20 bg-white/10 px-3 py-1 text-xs font-black uppercase text-emerald-200">Manual Handling NZ Challenge Platform</div>
-              <h1 className="text-4xl font-black leading-none md:text-6xl">{settings.title}</h1>
+              <h1 className="text-4xl font-black leading-none md:text-6xl">{runtimeSettings.title}</h1>
               <p className="mt-4 max-w-2xl text-slate-300">Welcome, {currentUser.name}. {challengeLive ? "Log healthy habits and help your team climb the leaderboard." : "This challenge is currently read-only."}</p>
-            </div>
             <button onClick={logout} className="rounded-2xl bg-white/10 px-4 py-3 font-black">Logout</button>
           </div>
         </header>
@@ -279,26 +1510,38 @@ export default function App() {
               <div className="mb-5 grid gap-4 md:grid-cols-4">
                 <div className="rounded-3xl bg-white p-5 shadow-sm"><div className="text-sm font-black uppercase text-slate-400">Today</div><div className="text-3xl font-black text-emerald-600">{todayPoints} pts</div></div>
                 <div className="rounded-3xl bg-white p-5 shadow-sm"><div className="text-sm font-black uppercase text-slate-400">Habits</div><div className="text-3xl font-black">{completedHabits}/5</div></div>
-                <div className="rounded-3xl bg-white p-5 shadow-sm"><div className="text-sm font-black uppercase text-slate-400">Status</div><div className="text-2xl font-black">{daySubmitted ? "Submitted" : "Open"}</div></div>
-                <div className="rounded-3xl bg-white p-5 shadow-sm"><div className="text-sm font-black uppercase text-slate-400">Team</div><div className="text-2xl font-black">{currentUser.team}</div></div>
+                <div className="rounded-3xl bg-white p-5 shadow-sm"><div className="text-sm font-black uppercase text-slate-400">Status</div><div className="text-2xl font-black">{challengeStatusMessage || (challengeLive ? "Active" : "Paused")}</div></div>
+                <div className="rounded-3xl bg-white p-5 shadow-sm"><div className="text-sm font-black uppercase text-slate-400">Team</div><div className="text-2xl font-black">{currentUser.team || currentUser.Team}</div></div>
+                <div className="rounded-3xl bg-white p-5 shadow-sm"><div className="text-sm font-black uppercase text-slate-400">Streak</div><div className="text-2xl font-black">{currentStreak} days</div></div>
+                <div className="rounded-3xl bg-white p-5 shadow-sm"><div className="text-sm font-black uppercase text-slate-400">Completed days</div><div className="text-2xl font-black">{totalDaysCompleted}</div></div>
+                <div className="rounded-3xl bg-white p-5 shadow-sm"><div className="text-sm font-black uppercase text-slate-400">Weekly %</div><div className="text-2xl font-black">{weeklyCompletion}%</div></div>
               </div>
 
               <div className="grid grid-cols-2 gap-4 md:grid-cols-5">
-                {habits.map((habit) => (
-                  <button key={habit.key} onClick={() => toggleHabit(habit.key)} className={`rounded-3xl border p-4 text-left shadow-sm ${todayLogs[habit.key] ? "border-emerald-500 bg-emerald-50" : "border-slate-200 bg-white"}`}>
-                    <div className="text-3xl">{habit.icon}</div>
-                    <div className="mt-3 text-lg font-black">{habit.label}</div>
-                    <div className="mt-1 text-sm text-slate-500">{habit.target}</div>
-                    <div className="mt-3 font-black text-emerald-600">+{pointValues[habit.key]} pts</div>
-                  </button>
-                ))}
+                {habitActivities.map((activity) => {
+                  const key = getActivityKey(activity);
+                  const isDone = todayLogs[key];
+                  return (
+                    <button key={key} onClick={() => toggleHabit(key)} disabled={activityEditLocked || activity.is_active === false} className={`rounded-3xl border p-4 text-left shadow-sm ${isDone ? "border-emerald-500 bg-emerald-50" : "border-slate-200 bg-white"} ${activity.is_active === false ? "opacity-50" : ""}`}>
+                      <div className="text-3xl">{activity.icon || "✅"}</div>
+                      <div className="mt-3 text-lg font-black">{activity.label || "Activity"}</div>
+                      <div className="mt-1 text-sm text-slate-500">{activity.description || activity.target || "Complete this healthy habit."}</div>
+                      <div className="mt-3 font-black text-emerald-600">+{activityPoints[key] || 10} pts</div>
+                    </button>
+                  );
+                })}
               </div>
 
               <div className="mt-6 grid gap-4 md:grid-cols-2">
                 <div className="rounded-3xl bg-white p-5 shadow-sm">
                   <h3 className="text-xl font-black">Submit your day</h3>
                   <p className="mt-2 text-sm font-semibold text-slate-500">Once submitted, today's log is locked.</p>
-                  <button onClick={submitDay} disabled={daySubmitted || !challengeLive} className={`mt-4 w-full rounded-2xl p-4 font-black text-white ${daySubmitted ? "bg-slate-400" : "bg-emerald-500"}`}>{daySubmitted ? "Submitted" : "Submit Day"}</button>
+                  <button onClick={submitDay} disabled={activityEditLocked} className={`mt-4 w-full rounded-2xl p-4 font-black text-white ${activityEditLocked ? "bg-slate-400" : "bg-emerald-500"}`}>Submit Day</button>
+                  {(statusMessage || challengeStatusMessage || alreadySubmittedToday) && (
+                    <div className={`mt-4 rounded-2xl p-4 text-sm font-semibold ${statusMessageType === "error" ? "bg-red-50 text-red-700" : statusMessageType === "info" ? "bg-slate-50 text-slate-700" : "bg-emerald-50 text-emerald-700"}`}>
+                      {statusMessage || (alreadySubmittedToday ? "Today already submitted." : challengeStatusMessage)}
+                    </div>
+                  )}
                 </div>
                 <div className="rounded-3xl bg-white p-5 shadow-sm">
                   <h3 className="text-xl font-black">Latest message</h3>
@@ -321,8 +1564,8 @@ export default function App() {
                     <div key={team.team} className="rounded-2xl bg-slate-50 p-4">
                       <div className="text-sm font-black uppercase text-slate-400">#{index + 1}</div>
                       <div className="text-xl font-black">{team.team}</div>
-                      <div className="text-2xl font-black text-emerald-600">{team.average}</div>
-                      <div className="text-xs font-bold text-slate-400">avg points</div>
+                      <div className="text-2xl font-black text-emerald-600">{team.total}</div>
+                      <div className="text-xs font-bold text-slate-400">team points</div>
                     </div>
                   ))}
                 </div>
@@ -331,7 +1574,7 @@ export default function App() {
                 {leaderboard.map((user, index) => (
                   <div key={user.id} className="flex items-center gap-4 border-b p-4 last:border-b-0">
                     <div className="grid h-12 w-12 place-items-center rounded-2xl bg-slate-100 font-black">{index + 1}</div>
-                    <div className="flex-1"><div className="font-black">{user.name}</div><div className="text-sm font-semibold text-slate-500">{user.team} · today +{user.todayPoints} · {user.submitted ? "submitted" : "not submitted"}</div></div>
+                    <div className="flex-1"><div className="font-black">{user.name}</div><div className="text-sm font-semibold text-slate-500">{user.team} · today +{user.todayPoints}</div></div>
                     <div className="text-right"><div className="text-2xl font-black text-emerald-600">{user.points}</div><div className="text-xs font-bold text-slate-400">points</div></div>
                   </div>
                 ))}
@@ -341,16 +1584,20 @@ export default function App() {
 
           {tab === "workouts" && (
             <section>
-              <h2 className="mb-4 text-3xl font-black">Simple workouts</h2>
+              <h2 className="mb-4 text-3xl font-black">Workouts</h2>
               <div className="grid gap-4 md:grid-cols-4">
-                {workouts.map((workout) => (
-                  <div key={workout.title} className="rounded-3xl bg-white p-5 shadow-sm">
-                    <div className="text-3xl">🏋️</div>
-                    <h3 className="mt-3 text-xl font-black">{workout.title}</h3>
-                    <p className="mt-1 text-sm font-semibold text-slate-500">{workout.type} · {workout.duration}</p>
-                    <div className="mt-5 rounded-2xl bg-slate-100 p-4 font-black">+{workout.points} points</div>
-                  </div>
-                ))}
+                {workoutActivities.map((activity) => {
+                  const key = getActivityKey(activity);
+                  const isDone = todayLogs[key];
+                  return (
+                    <button key={key} onClick={() => toggleHabit(key)} disabled={activityEditLocked || activity.is_active === false} className={`rounded-3xl border p-5 text-left shadow-sm ${isDone ? "border-emerald-500 bg-emerald-50" : "border-slate-200 bg-white"} ${activity.is_active === false ? "opacity-50" : ""}`}>
+                      <div className="text-3xl">{activity.icon || "🏋️"}</div>
+                      <h3 className="mt-3 text-xl font-black">{activity.label || "Workout"}</h3>
+                      <p className="mt-1 text-sm font-semibold text-slate-500">{activity.description || activity.target || "Workout session"}</p>
+                      <div className="mt-5 rounded-2xl bg-slate-100 p-4 font-black">+{activity.points || activityPoints[key] || 10} points</div>
+                    </button>
+                  );
+                })}
               </div>
             </section>
           )}
@@ -358,22 +1605,105 @@ export default function App() {
           {tab === "admin" && isAdmin && (
             <section>
               <div className="mb-5 flex flex-wrap items-center justify-between gap-3">
-                <div><h2 className="text-3xl font-black">Admin dashboard</h2><p className="text-slate-500">Export results and manage the pilot challenge.</p></div>
-                <div className="flex gap-2"><button onClick={exportLeaderboard} className="rounded-2xl bg-emerald-500 px-4 py-3 font-black text-white">Export leaderboard</button><button onClick={exportLogs} className="rounded-2xl bg-slate-900 px-4 py-3 font-black text-white">Export logs</button></div>
+                <div><h2 className="text-3xl font-black">Admin dashboard</h2><p className="text-slate-500">Read-only challenge metrics.</p></div>
+                <div className="flex flex-wrap gap-2">
+                  <button onClick={exportUsersCsv} className="rounded-2xl bg-emerald-500 px-4 py-3 font-black text-white">Export Users CSV</button>
+                  <button onClick={exportPointsLogCsv} className="rounded-2xl bg-emerald-500 px-4 py-3 font-black text-white">Export Points Log CSV</button>
+                  <button onClick={exportLeaderboardCsv} className="rounded-2xl bg-emerald-500 px-4 py-3 font-black text-white">Export Leaderboard CSV</button>
+                  <button onClick={exportStreakCsv} className="rounded-2xl bg-emerald-500 px-4 py-3 font-black text-white">Export Streak CSV</button>
+                  <button onClick={exportLogs} className="rounded-2xl bg-emerald-500 px-4 py-3 font-black text-white">Export Daily Logs</button>
+                </div>
               </div>
               <div className="grid gap-4 md:grid-cols-4">
-                <div className="rounded-3xl bg-white p-5 shadow-sm"><div className="text-sm font-black uppercase text-slate-400">Participants</div><div className="text-3xl font-black">{users.filter((u) => u.role !== "admin").length}</div></div>
-                <div className="rounded-3xl bg-white p-5 shadow-sm"><div className="text-sm font-black uppercase text-slate-400">Logs</div><div className="text-3xl font-black">{Object.keys(allLogs).length}</div></div>
-                <div className="rounded-3xl bg-white p-5 shadow-sm"><div className="text-sm font-black uppercase text-slate-400">Top logger</div><div className="text-3xl font-black">{leaderboard[0]?.name || "—"}</div></div>
-                <div className="rounded-3xl bg-white p-5 shadow-sm"><div className="text-sm font-black uppercase text-slate-400">Join code</div><div className="text-3xl font-black">{settings.joinCode}</div></div>
+                <div className="rounded-3xl bg-white p-5 shadow-sm"><div className="text-sm font-black uppercase text-slate-400">Total users</div><div className="text-3xl font-black">{users.length}</div></div>
+                <div className="rounded-3xl bg-white p-5 shadow-sm"><div className="text-sm font-black uppercase text-slate-400">Active users</div><div className="text-3xl font-black">{activeUsersCount}</div></div>
+                <div className="rounded-3xl bg-white p-5 shadow-sm"><div className="text-sm font-black uppercase text-slate-400">Total points logged</div><div className="text-3xl font-black">{totalPointsLogged}</div></div>
+                <div className="rounded-3xl bg-white p-5 shadow-sm"><div className="text-sm font-black uppercase text-slate-400">Habits today</div><div className="text-3xl font-black">{todayHabitsSubmitted}</div></div>
+                <div className="rounded-3xl bg-white p-5 shadow-sm"><div className="text-sm font-black uppercase text-slate-400">Number of teams</div><div className="text-3xl font-black">{teamCount}</div></div>
+                <div className="rounded-3xl bg-white p-5 shadow-sm"><div className="text-sm font-black uppercase text-slate-400">Top team</div><div className="text-3xl font-black">{topTeam}</div></div>
               </div>
-              <div className="mt-6 rounded-3xl bg-white p-5 shadow-sm"><h3 className="mb-4 text-xl font-black">10-week plan</h3><div className="grid gap-3 md:grid-cols-2">{weekPlan.map((item, index) => (<div key={item} className="flex items-center gap-3 rounded-2xl bg-slate-50 p-3"><div className="grid h-10 w-10 place-items-center rounded-xl bg-slate-900 text-white">{index + 1}</div><div className="font-bold">{item}</div></div>))}</div></div>
+              <div className="mt-6 rounded-3xl bg-white p-5 shadow-sm">
+                <h3 className="mb-4 text-xl font-black">Employee management</h3>
+                <div className="mb-4 flex flex-wrap items-center gap-3">
+                  <label className="text-sm font-bold text-slate-700">Filter team:</label>
+                  <select className="rounded-2xl border p-3 text-sm" value={teamFilter} onChange={(event) => setTeamFilter(event.target.value)}>
+                    {teamOptions.map((team) => (
+                      <option key={team} value={team}>{team}</option>
+                    ))}
+                  </select>
+                </div>
+                <div className="overflow-x-auto">
+                  <table className="min-w-full text-left text-sm text-slate-700">
+                    <thead>
+                      <tr>
+                        <th className="border-b border-slate-200 px-4 py-3">Name</th>
+                        <th className="border-b border-slate-200 px-4 py-3">Email</th>
+                        <th className="border-b border-slate-200 px-4 py-3">Team</th>
+                        <th className="border-b border-slate-200 px-4 py-3">Role</th>
+                        <th className="border-b border-slate-200 px-4 py-3">Total points</th>
+                        <th className="border-b border-slate-200 px-4 py-3">Today points</th>
+                        <th className="border-b border-slate-200 px-4 py-3">Days</th>
+                        <th className="border-b border-slate-200 px-4 py-3">Status</th>
+                        <th className="border-b border-slate-200 px-4 py-3">Actions</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {filteredEmployeeRows.map((user) => (
+                        <tr key={user.id} className="border-b border-slate-100">
+                          <td className="px-4 py-3 font-black">{user.name}</td>
+                          <td className="px-4 py-3 text-slate-500">{user.email}</td>
+                          <td className="px-4 py-3 flex items-center gap-2"><span className="h-2.5 w-2.5 rounded-full" style={{ backgroundColor: user.teamColor }} />{user.team}</td>
+                          <td className="px-4 py-3">{user.role}</td>
+                          <td className="px-4 py-3 font-black">{user.totalPoints}</td>
+                          <td className="px-4 py-3">{user.todayPoints}</td>
+                          <td className="px-4 py-3">{user.completedDays || 0}</td>
+                          <td className="px-4 py-3">{user.status}</td>
+                          <td className="px-4 py-3 space-y-2">
+                            <button onClick={() => toggleUserRole(user)} className="rounded-2xl bg-slate-900 px-3 py-2 text-xs font-black text-white">{user.role === "admin" ? "Demote" : "Promote"}</button>
+                            <button onClick={() => toggleUserActive(user)} className="rounded-2xl bg-slate-500 px-3 py-2 text-xs font-black text-white">{user.role === "inactive" ? "Reactivate" : "Deactivate"}</button>
+                            <button onClick={() => resetUserPoints(user.id)} className="rounded-2xl bg-emerald-500 px-3 py-2 text-xs font-black text-white">Reset points</button>
+                            <button onClick={() => deleteUser(user.id)} className="rounded-2xl bg-red-500 px-3 py-2 text-xs font-black text-white">Delete</button>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+              <div className="mt-6 rounded-3xl bg-white p-5 shadow-sm">
+                <h3 className="mb-4 text-xl font-black">Team breakdown</h3>
+                <div className="grid gap-3 md:grid-cols-4">
+                  {teamTotals.map((team) => (
+                    <div key={team.team} className="rounded-2xl bg-slate-50 p-4">
+                      <div className="font-black">{team.team}</div>
+                      <div className="mt-2 text-3xl font-black text-emerald-600">{team.total}</div>
+                      <div className="text-xs font-bold text-slate-400">{team.count} users · avg {team.average}</div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+              <div className="mt-6 rounded-3xl bg-white p-5 shadow-sm">
+                <h3 className="mb-4 text-xl font-black">Recent points activity</h3>
+                <div className="space-y-3">
+                  {recentActivity.map((item, index) => (
+                    <div key={`${item.user_id}-${index}`} className="rounded-2xl bg-slate-50 p-4">
+                      <div className="font-black">{item.userName}</div>
+                      <div className="mt-1 text-sm text-slate-500">{item.activity_name} · +{item.points} pts · {new Date(item.created_at).toLocaleString()}</div>
+                    </div>
+                  ))}
+                </div>
+              </div>
             </section>
           )}
 
           {tab === "settings" && isAdmin && (
             <section>
               <h2 className="mb-4 text-3xl font-black">Settings</h2>
+              <div className="mb-6 grid gap-4 md:grid-cols-3">
+                <div className="rounded-3xl bg-white p-5 shadow-sm"><div className="text-sm font-black uppercase text-slate-400">Company</div><div className="text-3xl font-black">{company?.name || runtimeSettings.company}</div></div>
+                <div className="rounded-3xl bg-white p-5 shadow-sm"><div className="text-sm font-black uppercase text-slate-400">Join code</div><div className="text-3xl font-black">{runtimeSettings.joinCode}</div></div>
+                <div className="rounded-3xl bg-white p-5 shadow-sm"><div className="text-sm font-black uppercase text-slate-400">Activities</div><div className="text-3xl font-black">{activityCount} / {activeActivityCount}</div></div>
+              </div>
               <div className="grid gap-6 md:grid-cols-2">
                 <form onSubmit={saveSettings} className="rounded-3xl bg-white p-5 shadow-sm">
                   <h3 className="mb-4 text-xl font-black">Challenge settings</h3>
@@ -384,6 +1714,10 @@ export default function App() {
                     <input className="rounded-2xl border p-3 font-semibold" value={settings.startDate} onChange={(event) => setSettings({ ...settings, startDate: event.target.value })} placeholder="Start date" />
                     <input className="rounded-2xl border p-3 font-semibold" value={settings.endDate} onChange={(event) => setSettings({ ...settings, endDate: event.target.value })} placeholder="End date" />
                     <select className="rounded-2xl border p-3 font-semibold" value={settings.status} onChange={(event) => setSettings({ ...settings, status: event.target.value })}><option value="pre">Pre-start</option><option value="live">Live</option><option value="complete">Complete</option></select>
+                    <label className="inline-flex items-center gap-2 rounded-2xl border border-slate-200 bg-slate-50 p-3">
+                      <input type="checkbox" checked={settings.is_active !== false} onChange={(event) => setSettings({ ...settings, is_active: event.target.checked })} />
+                      Challenge active
+                    </label>
                     <button className="rounded-2xl bg-emerald-500 p-4 font-black text-white">Save settings</button>
                   </div>
                 </form>
@@ -396,6 +1730,65 @@ export default function App() {
                   </div>
                 </form>
               </div>
+              <form onSubmit={saveActivities} className="mt-6 rounded-3xl bg-white p-5 shadow-sm">
+                <h3 className="mb-4 text-xl font-black">Challenge activity builder</h3>
+                <p className="mb-4 text-sm text-slate-500">Changes affect employee cards after save.</p>
+                <div className="grid gap-3 rounded-2xl bg-slate-50 p-4 text-xs font-black uppercase text-slate-500 md:grid-cols-8">
+                  <div>Key</div>
+                  <div>Label</div>
+                  <div>Description</div>
+                  <div>Points</div>
+                  <div>Type</div>
+                  <div>Active</div>
+                  <div>Order</div>
+                  <div>Action</div>
+                </div>
+                <div className="space-y-4 mt-4">
+                  {activityEdits.map((activity, index) => (
+                    <div key={activity.id || index} className="grid gap-3 rounded-2xl border border-slate-200 p-4 md:grid-cols-8">
+                      <input className="rounded-2xl border p-3 font-semibold" value={activity.activity_key || ""} onChange={(event) => updateActivityField(index, "activity_key", event.target.value)} placeholder="e.g. nutrition" />
+                      <input className="rounded-2xl border p-3 font-semibold" value={activity.label || ""} onChange={(event) => updateActivityField(index, "label", event.target.value)} placeholder="e.g. Nutrition" />
+                      <input className="rounded-2xl border p-3 font-semibold" value={activity.description || ""} onChange={(event) => updateActivityField(index, "description", event.target.value)} placeholder="Description" />
+                      <input className="rounded-2xl border p-3 font-semibold" type="number" value={activity.points || 0} onChange={(event) => updateActivityField(index, "points", Number(event.target.value))} placeholder="Points" />
+                      <select className="rounded-2xl border p-3 font-semibold" value={activity.activity_type || "habit"} onChange={(event) => updateActivityField(index, "activity_type", event.target.value)}>
+                        <option value="habit">Habit</option>
+                        <option value="workout">Workout</option>
+                      </select>
+                      <label className="inline-flex items-center gap-2 rounded-2xl border border-slate-200 bg-slate-50 p-3">
+                        <input type="checkbox" checked={activity.is_active !== false} onChange={(event) => updateActivityField(index, "is_active", event.target.checked)} />
+                        Active
+                      </label>
+                      <input className="rounded-2xl border p-3 font-semibold" type="number" value={activity.sort_order || 0} onChange={(event) => updateActivityField(index, "sort_order", Number(event.target.value))} placeholder="Order" />
+                      <button type="button" className="rounded-2xl bg-red-500 px-4 py-3 font-black text-white" onClick={() => removeActivityRow(index)}>Remove</button>
+                    </div>
+                  ))}
+                  <div className="flex flex-wrap gap-3">
+                    <button type="button" onClick={addActivityRow} className="rounded-2xl bg-slate-900 px-4 py-3 font-black text-white">Add activity</button>
+                    <button type="button" onClick={resetActivityDefaults} className="rounded-2xl bg-slate-500 px-4 py-3 font-black text-white">Reset to defaults</button>
+                    <button type="submit" className="rounded-2xl bg-emerald-500 px-4 py-3 font-black text-white">Save activities</button>
+                  </div>
+                  {adminBuilderMessage && (
+                    <div className={`rounded-2xl p-4 text-sm font-semibold ${adminBuilderMessageType === "error" ? "bg-red-50 text-red-700" : adminBuilderMessageType === "info" ? "bg-slate-50 text-slate-700" : "bg-emerald-50 text-emerald-700"}`}>
+                      {adminBuilderMessage}
+                    </div>
+                  )}
+                </div>
+              </form>
+              {activityEdits.length > 0 && (
+                <div className="mt-6 rounded-3xl bg-white p-5 shadow-sm">
+                  <h3 className="mb-4 text-xl font-black">Employee preview</h3>
+                  <div className="grid gap-4 md:grid-cols-2">
+                    {activityEdits.map((activity, index) => (
+                      <div key={activity.id || index} className="rounded-2xl bg-slate-50 p-4">
+                        <div className="font-black">{activity.label || "Untitled activity"}</div>
+                        <div className="mt-2 text-sm text-slate-500">{activity.description || "No description provided."}</div>
+                        <div className="mt-3 text-sm font-black text-emerald-600">+{Number(activity.points) || 10} pts</div>
+                        <div className="mt-1 text-xs uppercase text-slate-400">{activity.activity_type || "habit"}</div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
             </section>
           )}
         </main>
