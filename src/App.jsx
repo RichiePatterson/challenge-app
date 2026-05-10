@@ -87,6 +87,12 @@ export default function App() {
   const [statusMessageType, setStatusMessageType] = useState("success");
   const [authError, setAuthError] = useState("");
   const [authDiagnostics, setAuthDiagnostics] = useState([]);
+  const [passwordResetStage, setPasswordResetStage] = useState(null);
+  const [resetEmail, setResetEmail] = useState("");
+  const [resetMessage, setResetMessage] = useState("");
+  const [resetError, setResetError] = useState("");
+  const [newPassword, setNewPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
   const [activities, setActivities] = useState([]);
   const [activityEdits, setActivityEdits] = useState([]);
   const [challengeSettings, setChallengeSettings] = useState({});
@@ -905,6 +911,55 @@ export default function App() {
     }
   }
 
+  async function requestPasswordReset(event) {
+    event.preventDefault();
+    setResetError("");
+    setResetMessage("");
+    const email = resetEmail.trim().toLowerCase();
+    if (!email) {
+      setResetError("Please enter your email address.");
+      return;
+    }
+
+    const { data, error } = await supabase.auth.resetPasswordForEmail(email, {
+      redirectTo: window.location.origin,
+    });
+
+    if (error) {
+      setResetError(error.message || "Failed to send password reset email.");
+      return;
+    }
+
+    setResetMessage("Password reset email sent. Please check your inbox.");
+  }
+
+  async function submitNewPassword(event) {
+    event.preventDefault();
+    setResetError("");
+    setResetMessage("");
+
+    if (!newPassword || !confirmPassword) {
+      setResetError("Please enter and confirm your new password.");
+      return;
+    }
+    if (newPassword !== confirmPassword) {
+      setResetError("Passwords do not match.");
+      return;
+    }
+
+    const { data, error } = await supabase.auth.updateUser({ password: newPassword });
+    if (error) {
+      setResetError(error.message || "Failed to update password.");
+      return;
+    }
+
+    setResetMessage("Password updated. You can now log in.");
+    setNewPassword("");
+    setConfirmPassword("");
+    setPasswordResetStage(null);
+    setAuthMode("login");
+  }
+
   function logout() {
     setCurrentUser(null);
     supabase.auth.signOut();
@@ -1459,10 +1514,60 @@ export default function App() {
                 <input className="w-full rounded-2xl border p-4 font-semibold" placeholder="Name" value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} />
               )}
               <input className="w-full rounded-2xl border p-4 font-semibold" type="email" required placeholder="Email" value={form.email} onChange={(event) => setForm({ ...form, email: event.target.value })} />
-              <input className="w-full rounded-2xl border p-4 font-semibold" type="password" required placeholder="Password" value={form.password} onChange={(event) => setForm({ ...form, password: event.target.value })} />
-              {authError && authMode === "login" && (
+              {passwordResetStage !== "confirm" && (
+                <input className="w-full rounded-2xl border p-4 font-semibold" type="password" required placeholder="Password" value={form.password} onChange={(event) => setForm({ ...form, password: event.target.value })} />
+              )}
+
+              {authMode === "login" && !passwordResetStage && (
+                <div className="text-right">
+                  <button type="button" className="text-sm font-semibold text-emerald-600 hover:text-emerald-800" onClick={() => {
+                    setPasswordResetStage("request");
+                    setResetEmail(form.email.trim().toLowerCase());
+                    setResetError("");
+                    setResetMessage("");
+                    setAuthError("");
+                  }}>
+                    Forgot password?
+                  </button>
+                </div>
+              )}
+
+              {!passwordResetStage && resetMessage && (
+                <div className="rounded-2xl bg-emerald-50 p-4 text-sm font-semibold text-emerald-700">{resetMessage}</div>
+              )}
+
+              {authError && authMode === "login" && !passwordResetStage && (
                 <div className="rounded-2xl bg-red-50 p-4 text-sm font-semibold text-red-700">{authError}</div>
               )}
+
+              {passwordResetStage === "request" && authMode === "login" && (
+                <>
+                  <input className="w-full rounded-2xl border p-4 font-semibold" type="email" required placeholder="Email" value={resetEmail} onChange={(event) => setResetEmail(event.target.value)} />
+                  {resetError && (
+                    <div className="rounded-2xl bg-red-50 p-4 text-sm font-semibold text-red-700">{resetError}</div>
+                  )}
+                  {resetMessage && (
+                    <div className="rounded-2xl bg-emerald-50 p-4 text-sm font-semibold text-emerald-700">{resetMessage}</div>
+                  )}
+                  <button type="button" onClick={requestPasswordReset} className="w-full rounded-2xl bg-emerald-500 p-4 text-lg font-black text-white">Send reset email</button>
+                  <button type="button" onClick={() => { setPasswordResetStage(null); setResetError(""); setResetMessage(""); }} className="w-full rounded-2xl border border-slate-200 bg-white p-4 text-lg font-black text-slate-700">Back to login</button>
+                </>
+              )}
+
+              {passwordResetStage === "confirm" && authMode === "login" && (
+                <>
+                  <input className="w-full rounded-2xl border p-4 font-semibold" type="password" required placeholder="New password" value={newPassword} onChange={(event) => setNewPassword(event.target.value)} />
+                  <input className="w-full rounded-2xl border p-4 font-semibold" type="password" required placeholder="Confirm new password" value={confirmPassword} onChange={(event) => setConfirmPassword(event.target.value)} />
+                  {resetError && (
+                    <div className="rounded-2xl bg-red-50 p-4 text-sm font-semibold text-red-700">{resetError}</div>
+                  )}
+                  {resetMessage && (
+                    <div className="rounded-2xl bg-emerald-50 p-4 text-sm font-semibold text-emerald-700">{resetMessage}</div>
+                  )}
+                  <button type="button" onClick={submitNewPassword} className="w-full rounded-2xl bg-emerald-500 p-4 text-lg font-black text-white">Set new password</button>
+                </>
+              )}
+
               {authMode === "signup" && (
                 <>
                   <select className="w-full rounded-2xl border p-4 font-semibold" value={form.team} onChange={(event) => setForm({ ...form, team: event.target.value })}>
@@ -1477,7 +1582,11 @@ export default function App() {
                   )}
                 </>
               )}
-              <button type="button" onClick={(event) => { setAuthDiagnostics([authMode === "login" ? "Login clicked" : "Signup clicked"]); setAuthError(""); if (authMode === "login") login(event); else signup(event); }} className="w-full rounded-2xl bg-emerald-500 p-4 text-lg font-black text-white">{authMode === "login" ? "Login" : "Join challenge"}</button>
+
+              {passwordResetStage !== "request" && passwordResetStage !== "confirm" && (
+                <button type="button" onClick={(event) => { setAuthDiagnostics([authMode === "login" ? "Login clicked" : "Signup clicked"]); setAuthError(""); if (authMode === "login") login(event); else signup(event); }} className="w-full rounded-2xl bg-emerald-500 p-4 text-lg font-black text-white">{authMode === "login" ? "Login" : "Join challenge"}</button>
+              )}
+
               {authDiagnostics.length > 0 && (
                 <div className="mt-4 rounded-2xl bg-slate-100 p-4 text-sm text-slate-700">
                   <div className="font-black uppercase text-slate-500">Auth diagnostics</div>
