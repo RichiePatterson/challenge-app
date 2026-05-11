@@ -756,6 +756,41 @@ export default function App() {
     }
   }
 
+  async function loadTeamsForJoinCode(joinCode) {
+    if (!joinCode || joinCode.length < 3) return;
+
+    const { data: companyRecord, error: companyError } = await supabase
+      .from("companies")
+      .select("*")
+      .eq("join_code", joinCode.trim().toUpperCase())
+      .maybeSingle();
+
+    if (companyError || !companyRecord) {
+      return;
+    }
+
+    const { data: teamsData } = await supabase
+      .from("challenge_settings")
+      .select("value")
+      .eq("company_id", companyRecord.id)
+      .eq("key", "teams")
+      .maybeSingle();
+
+    let teams = ["Workshop", "Warehouse", "Installers", "Office"];
+    if (teamsData && teamsData.value && teamsData.value.trim()) {
+      const parsedTeams = teamsData.value.split(",").map(t => t.trim()).filter(t => t);
+      if (parsedTeams.length > 0) {
+        teams = parsedTeams;
+      }
+    }
+    setSignupTeams(teams);
+
+    // Set default team if current selection is not valid
+    if (!teams.includes(form.team)) {
+      setForm({ ...form, team: teams[0] });
+    }
+  }
+
   async function signup(event) {
     event.preventDefault();
 
@@ -774,25 +809,6 @@ export default function App() {
     if (companyError || !companyRecord) {
       setAuthError("Incorrect join code. Please check with your challenge organiser.");
       return;
-    }
-
-    // Load teams for this company
-    const { data: teamsData } = await supabase
-      .from("challenge_settings")
-      .select("value")
-      .eq("company_id", companyRecord.id)
-      .eq("key", "teams")
-      .maybeSingle();
-
-    let teams = ["Workshop", "Warehouse", "Installers", "Office"];
-    if (teamsData && teamsData.value) {
-      teams = teamsData.value.split(",").map(t => t.trim());
-    }
-    setSignupTeams(teams);
-
-    // Set default team if current selection is not valid
-    if (!teams.includes(form.team)) {
-      setForm({ ...form, team: teams[0] });
     }
 
     const email = form.email.trim().toLowerCase();
@@ -1549,7 +1565,7 @@ export default function App() {
                   <select className="w-full rounded-2xl border p-4 font-semibold" value={form.team} onChange={(event) => setForm({ ...form, team: event.target.value })}>
                     {signupTeams.map(team => <option key={team}>{team}</option>)}
                   </select>
-                  <input className="w-full rounded-2xl border p-4 font-semibold" placeholder="Enter join code" value={form.code} onChange={(event) => setForm({ ...form, code: event.target.value.toUpperCase() })} />
+                  <input className="w-full rounded-2xl border p-4 font-semibold" placeholder="Enter join code" value={form.code} onChange={(event) => { const code = event.target.value.toUpperCase(); setForm({ ...form, code }); loadTeamsForJoinCode(code); }} />
                   {authError && authMode === "signup" && (
                     <div className="rounded-2xl bg-red-50 p-4 text-sm font-semibold text-red-700">{authError}</div>
                   )}
