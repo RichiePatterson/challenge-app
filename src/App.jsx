@@ -911,7 +911,7 @@ export default function App() {
       }
 
       if (!existingUser) {
-        const payload = { id: userId, email: emailLower, name, Team: form.team, role: "employee" };
+        const payload = { id: userId, email: emailLower, name, Team: form.team, role: "employee", company_id: companyRecord.id, is_active: true };
         diagnostics.push("signup profile payload creation");
         diagnostics.push(`profile payload: ${JSON.stringify(payload)}`);
         diagnostics.push("calling Users.insert");
