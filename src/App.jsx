@@ -235,9 +235,15 @@ export default function App() {
   }
 
   async function loadChallengeSettings() {
+    if (!currentUser?.company_id) {
+      console.warn("Cannot load challenge settings: no company_id");
+      return null;
+    }
+
     const { data, error } = await supabase
       .from("challenge_settings")
-      .select("*");
+      .select("*")
+      .eq("company_id", currentUser.company_id);
     if (error) {
       console.error("challenge settings load error", error);
       return null;
@@ -1236,6 +1242,11 @@ export default function App() {
     event.preventDefault();
     setStored("mh_settings", settings);
 
+    if (!currentUser?.company_id) {
+      alert("Error: No company associated with this account.");
+      return;
+    }
+
     // Upsert challenge_settings
     const keysToSave = ["company", "title", "joinCode", "startDate", "endDate", "status", "is_active", "team_colors"];
     const upsertData = keysToSave.map(key => ({
@@ -1248,16 +1259,18 @@ export default function App() {
           : settings[key] || "",
     }));
 
-    const { error } = await supabase
+    console.log("Saving settings:", upsertData);
+    const { data, error } = await supabase
       .from("challenge_settings")
-      .upsert(upsertData, { onConflict: "company_id,key" });
+      .upsert(upsertData, { onConflict: ["company_id", "key"] });
 
     if (error) {
-      console.error("save challenge settings error", error);
-      alert("Settings saved locally, but failed to update database.");
+      console.error("save challenge settings error:", error.message, error);
+      alert(`Settings saved locally, but database update failed: ${error.message}`);
       return;
     }
 
+    console.log("Settings saved to database:", data);
     alert("Settings saved.");
     await loadChallengeSettings(); // Reload to sync
   }
@@ -1411,21 +1424,28 @@ export default function App() {
     event.preventDefault();
     setStored("mh_announcement", announcement);
 
+    if (!currentUser?.company_id) {
+      alert("Error: No company associated with this account.");
+      return;
+    }
+
     const upsertData = [
       { company_id: currentUser.company_id, key: "announcement_title", value: announcement.title || "" },
       { company_id: currentUser.company_id, key: "announcement_body", value: announcement.body || "" },
     ];
 
-    const { error } = await supabase
+    console.log("Saving announcement:", upsertData);
+    const { data, error } = await supabase
       .from("challenge_settings")
-      .upsert(upsertData, { onConflict: "company_id,key" });
+      .upsert(upsertData, { onConflict: ["company_id", "key"] });
 
     if (error) {
-      console.error("save announcement error", error);
-      alert("Announcement saved locally, but failed to update database.");
+      console.error("save announcement error:", error.message, error);
+      alert(`Announcement saved locally, but database update failed: ${error.message}`);
       return;
     }
 
+    console.log("Announcement saved to database:", data);
     setToast("Announcement saved.");
   }
 
