@@ -1546,11 +1546,6 @@ export default function App() {
             <div className="mb-4 inline-flex rounded-full border border-white/20 bg-white/10 px-3 py-1 text-xs font-black uppercase text-emerald-200">Manual Handling NZ</div>
             <h1 className="text-5xl font-black leading-none md:text-7xl">{runtimeSettings.title}</h1>
             <p className="mt-5 max-w-md text-lg text-slate-300">Online workplace wellbeing challenge for logging habits, scoring points, team competition and employer reporting.</p>
-            <div className="mt-8 grid gap-3 text-sm font-bold text-slate-200">
-              <div className="rounded-2xl bg-white/10 p-4">Company: {runtimeSettings.company}</div>
-              <div className="rounded-2xl bg-white/10 p-4">Starts: {runtimeSettings.startDate}</div>
-              <div className="rounded-2xl bg-white/10 p-4">Join code: {runtimeSettings.joinCode}</div>
-            </div>
           </div>
           <div className="p-8 md:p-12">
             <div className="mb-6 grid grid-cols-2 rounded-2xl bg-slate-100 p-2">
