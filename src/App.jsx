@@ -86,13 +86,13 @@ export default function App() {
   const [statusMessage, setStatusMessage] = useState("");
   const [statusMessageType, setStatusMessageType] = useState("success");
   const [authError, setAuthError] = useState("");
-  const [authDiagnostics, setAuthDiagnostics] = useState([]);
   const [passwordResetStage, setPasswordResetStage] = useState(null);
   const [resetEmail, setResetEmail] = useState("");
   const [resetMessage, setResetMessage] = useState("");
   const [resetError, setResetError] = useState("");
   const [newPassword, setNewPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
+  const [signupTeams, setSignupTeams] = useState(["Workshop", "Warehouse", "Installers", "Office"]);
   const [activities, setActivities] = useState([]);
 
   function clearPasswordResetState() {
@@ -178,10 +178,6 @@ export default function App() {
     return userData;
   }
 
-  function formatDiagnostics(lines) {
-    return lines.filter(Boolean).map((line) => String(line));
-  }
-
   async function authRequestWithTimeout(requestPromise, timeoutMs = 8000) {
     let timeoutId;
     const timeoutPromise = new Promise((_, reject) => {
@@ -259,6 +255,8 @@ export default function App() {
         } catch {
           settingsObj[item.key] = {};
         }
+      } else if (item.key === "teams") {
+        settingsObj[item.key] = item.value || "Workshop, Warehouse, Installers, Office";
       } else if (item.key === "announcement_title") {
         announcementObj.title = item.value || "";
       } else if (item.key === "announcement_body") {
@@ -694,55 +692,33 @@ export default function App() {
   async function login(event) {
     event.preventDefault();
     setAuthError("");
-    const diagnostics = ["Login clicked"];
 
     const email = form.email.trim().toLowerCase();
     const password = form.password.trim();
-    diagnostics.push(`email used: ${email}`);
-    diagnostics.push(`password length: ${password.length}`);
-    setAuthDiagnostics(formatDiagnostics(diagnostics));
 
     try {
-      diagnostics.push("calling supabase.auth.signInWithPassword");
       console.log("login auth start", email);
-      setAuthDiagnostics(formatDiagnostics(diagnostics));
       const { data, error } = await authRequestWithTimeout(supabase.auth.signInWithPassword({ email, password }));
       console.log("login auth end", email, { error });
-      diagnostics.push(`login auth response: ${error ? error.message : "ok"}`);
-      setAuthDiagnostics(formatDiagnostics(diagnostics));
 
       if (error) {
-        diagnostics.push(`Supabase auth error: ${String(error.message)}`);
-        diagnostics.push(`Supabase auth error details: ${JSON.stringify(error)}`);
-        setAuthDiagnostics(formatDiagnostics(diagnostics));
         setAuthError(String(error.message || "Login failed."));
         return;
       }
 
       const authUser = data?.user;
-      diagnostics.push(`auth user present: ${Boolean(authUser)}`);
-      setAuthDiagnostics(formatDiagnostics(diagnostics));
       if (!authUser) {
-        diagnostics.push("Supabase auth error: no user returned");
-        setAuthDiagnostics(formatDiagnostics(diagnostics));
         setAuthError("Login failed: no user returned.");
         return;
       }
 
-      diagnostics.push("login profile lookup start");
-      setAuthDiagnostics(formatDiagnostics(diagnostics));
       const { data: user, error: lookupError } = await supabase
         .from("Users")
         .select("*")
         .eq("email", email)
         .maybeSingle();
-      diagnostics.push(`login profile lookup response: ${lookupError ? lookupError.message : user ? "found" : "not found"}`);
-      setAuthDiagnostics(formatDiagnostics(diagnostics));
 
       if (lookupError) {
-        diagnostics.push(`profile lookup error: ${String(lookupError.message)}`);
-        diagnostics.push(`profile lookup error details: ${JSON.stringify(lookupError)}`);
-        setAuthDiagnostics(formatDiagnostics(diagnostics));
         setAuthError(String(lookupError.message));
         return;
       }
@@ -751,59 +727,32 @@ export default function App() {
       if (!profile) {
         const name = email.split("@")[0];
         const payload = { id: authUser.id, email, name, Team: "Office", role: "employee" };
-        diagnostics.push("login profile payload creation");
-        diagnostics.push(`profile payload: ${JSON.stringify(payload)}`);
-        diagnostics.push("calling Users.insert");
-        setAuthDiagnostics(formatDiagnostics(diagnostics));
 
         const { data: insertData, error: insertError } = await supabase
           .from("Users")
           .insert([payload])
           .select()
           .single();
-        diagnostics.push(`login profile insert response: ${insertError ? insertError.message : "ok"}`);
-        setAuthDiagnostics(formatDiagnostics(diagnostics));
 
         if (insertError) {
-          diagnostics.push(`profile insert error: ${String(insertError.message)}`);
-          diagnostics.push(`profile insert error details: ${JSON.stringify(insertError)}`);
-          diagnostics.push(`profile insert error code: ${insertError.code || "none"}`);
-          setAuthDiagnostics(formatDiagnostics(diagnostics));
           setAuthError(String(insertError.message));
           return;
         }
 
         profile = insertData;
-        diagnostics.push("profile repair success");
-        setAuthDiagnostics(formatDiagnostics(diagnostics));
-      } else {
-        diagnostics.push("login profile lookup success");
-        setAuthDiagnostics(formatDiagnostics(diagnostics));
       }
 
       if (profile?.company_id) {
-        diagnostics.push("loading company data");
-        setAuthDiagnostics(formatDiagnostics(diagnostics));
         await loadCompanyData(profile.company_id);
         await loadActivities(profile.company_id);
       }
 
       setCurrentUser(profile);
-      diagnostics.push("setCurrentUser done");
-      setAuthDiagnostics(formatDiagnostics(diagnostics));
       setAuthMode("login");
-      diagnostics.push('setAuthMode("login")');
-      setAuthDiagnostics(formatDiagnostics(diagnostics));
       setAuthError("");
     } catch (error) {
       console.error("Login error", error);
-      const message = String(error?.message || "Login failed. Please try again.");
-      diagnostics.push(`exception message: ${message}`);
-      diagnostics.push(`exception json: ${JSON.stringify(error)}`);
-      setAuthDiagnostics(formatDiagnostics(diagnostics));
-      setAuthError(message);
-    } finally {
-      setAuthDiagnostics(formatDiagnostics(diagnostics));
+      setAuthError(String(error?.message || "Login failed. Please try again."));
     }
   }
 
@@ -827,6 +776,25 @@ export default function App() {
       return;
     }
 
+    // Load teams for this company
+    const { data: teamsData } = await supabase
+      .from("challenge_settings")
+      .select("value")
+      .eq("company_id", companyRecord.id)
+      .eq("key", "teams")
+      .maybeSingle();
+
+    let teams = ["Workshop", "Warehouse", "Installers", "Office"];
+    if (teamsData && teamsData.value) {
+      teams = teamsData.value.split(",").map(t => t.trim());
+    }
+    setSignupTeams(teams);
+
+    // Set default team if current selection is not valid
+    if (!teams.includes(form.team)) {
+      setForm({ ...form, team: teams[0] });
+    }
+
     const email = form.email.trim().toLowerCase();
     const password = form.password.trim();
     const name = form.name.trim() || email.split("@")[0];
@@ -836,125 +804,70 @@ export default function App() {
       return;
     }
 
-    const diagnostics = ["Signup clicked"];
-    const emailLower = email;
-    diagnostics.push(`email used: ${emailLower}`);
-    diagnostics.push(`password length: ${password.length}`);
-    setAuthDiagnostics(formatDiagnostics(diagnostics));
-
     try {
-      diagnostics.push("calling supabase.auth.signUp");
-      console.log("signup auth start", emailLower);
-      setAuthDiagnostics(formatDiagnostics(diagnostics));
+      console.log("signup auth start", email);
       let data, error;
       try {
-        ({ data, error } = await authRequestWithTimeout(supabase.auth.signUp({ email: emailLower, password })));
+        ({ data, error } = await authRequestWithTimeout(supabase.auth.signUp({ email: email, password })));
       } catch (timeoutError) {
-        console.log("signup auth timeout", emailLower, timeoutError);
-        diagnostics.push("Supabase auth error: Auth request timed out");
-        diagnostics.push("Signup may have created the auth user but timed out. Try logging in.");
-        setAuthDiagnostics(formatDiagnostics(diagnostics));
+        console.log("signup auth timeout", email, timeoutError);
         setAuthError("Auth request timed out");
         return;
       }
-      console.log("signup auth end", emailLower, { error });
-      diagnostics.push(`signup auth response: ${error ? error.message : "ok"}`);
-      setAuthDiagnostics(formatDiagnostics(diagnostics));
+      console.log("signup auth end", email, { error });
 
       if (error) {
         const message = String(error.message || "Signup failed.");
-        diagnostics.push(`Supabase auth error: ${message}`);
-        diagnostics.push(`Supabase auth error details: ${JSON.stringify(error)}`);
-        setAuthDiagnostics(formatDiagnostics(diagnostics));
         setAuthError(message);
         if (/rate limit/i.test(message)) {
           return;
         }
         if (/already.*exists|already.*registered|duplicate/i.test(message)) {
           setAuthMode("login");
-          diagnostics.push('setAuthMode("login")');
-          setAuthDiagnostics(formatDiagnostics(diagnostics));
           return;
         }
         return;
       }
 
       const userId = data?.user?.id;
-      diagnostics.push(`auth user id: ${userId || "none"}`);
-      setAuthDiagnostics(formatDiagnostics(diagnostics));
       if (!userId) {
-        diagnostics.push("Signup succeeded but no user id returned");
-        setAuthDiagnostics(formatDiagnostics(diagnostics));
         setAuthError("Account created! Please check your email and then login.");
         setAuthMode("login");
-        diagnostics.push('setAuthMode("login")');
-        setAuthDiagnostics(formatDiagnostics(diagnostics));
         return;
       }
 
-      diagnostics.push("signup profile lookup start");
-      setAuthDiagnostics(formatDiagnostics(diagnostics));
       const { data: existingUser, error: existingError } = await supabase
         .from("Users")
         .select("*")
         .eq("id", userId)
         .maybeSingle();
-      diagnostics.push(`signup profile lookup response: ${existingError ? existingError.message : existingUser ? "found" : "not found"}`);
-      setAuthDiagnostics(formatDiagnostics(diagnostics));
 
       if (existingError) {
-        diagnostics.push(`profile lookup error: ${String(existingError.message)}`);
-        diagnostics.push(`profile lookup error details: ${JSON.stringify(existingError)}`);
-        setAuthDiagnostics(formatDiagnostics(diagnostics));
         setAuthError(String(existingError.message));
         return;
       }
 
       if (!existingUser) {
-        const payload = { id: userId, email: emailLower, name, Team: form.team, role: "employee", company_id: companyRecord.id, is_active: true };
-        diagnostics.push("signup profile payload creation");
-        diagnostics.push(`profile payload: ${JSON.stringify(payload)}`);
-        diagnostics.push("calling Users.insert");
-        setAuthDiagnostics(formatDiagnostics(diagnostics));
+        const payload = { id: userId, email: email, name, Team: form.team, role: "employee", company_id: companyRecord.id, is_active: true };
 
         const { data: insertData, error: insertError } = await supabase
           .from("Users")
           .insert([payload])
           .select()
           .single();
-        diagnostics.push(`signup profile insert response: ${insertError ? insertError.message : "ok"}`);
-        setAuthDiagnostics(formatDiagnostics(diagnostics));
 
         if (insertError) {
           console.error("Profile insert error", insertError);
-          diagnostics.push(`profile insert error: ${String(insertError.message)}`);
-          diagnostics.push(`profile insert error details: ${JSON.stringify(insertError)}`);
-          diagnostics.push(`profile insert error code: ${insertError.code || "none"}`);
-          setAuthDiagnostics(formatDiagnostics(diagnostics));
           setAuthError(String(insertError.message));
           return;
         }
-
-        diagnostics.push("profile insert success");
-        setAuthDiagnostics(formatDiagnostics(diagnostics));
-      } else {
-        diagnostics.push("signup profile lookup success");
-        setAuthDiagnostics(formatDiagnostics(diagnostics));
       }
 
       setAuthError("Account created successfully! Please login using your email and password.");
       setAuthMode("login");
-      diagnostics.push('setAuthMode("login")');
-      setAuthDiagnostics(formatDiagnostics(diagnostics));
     } catch (error) {
       console.error("Signup error", error);
-      const message = String(error?.message || "Signup failed. Please try again.");
-      diagnostics.push(`exception message: ${message}`);
-      diagnostics.push(`exception json: ${JSON.stringify(error)}`);
-      setAuthDiagnostics(formatDiagnostics(diagnostics));
-      setAuthError(message);
-    } finally {
-      setAuthDiagnostics(formatDiagnostics(diagnostics));
+      setAuthError(String(error?.message || "Signup failed. Please try again."));
     }
   }
 
@@ -1248,7 +1161,7 @@ export default function App() {
     }
 
     // Upsert challenge_settings
-    const keysToSave = ["company", "title", "joinCode", "startDate", "endDate", "status", "is_active", "team_colors"];
+    const keysToSave = ["company", "title", "joinCode", "startDate", "endDate", "status", "is_active", "team_colors", "teams"];
     const upsertData = keysToSave.map(key => ({
       company_id: currentUser.company_id,
       key,
@@ -1634,10 +1547,7 @@ export default function App() {
               {authMode === "signup" && (
                 <>
                   <select className="w-full rounded-2xl border p-4 font-semibold" value={form.team} onChange={(event) => setForm({ ...form, team: event.target.value })}>
-                    <option>Workshop</option>
-                    <option>Warehouse</option>
-                    <option>Installers</option>
-                    <option>Office</option>
+                    {signupTeams.map(team => <option key={team}>{team}</option>)}
                   </select>
                   <input className="w-full rounded-2xl border p-4 font-semibold" placeholder="Enter join code" value={form.code} onChange={(event) => setForm({ ...form, code: event.target.value.toUpperCase() })} />
                   {authError && authMode === "signup" && (
@@ -1647,18 +1557,7 @@ export default function App() {
               )}
 
               {passwordResetStage !== "request" && passwordResetStage !== "confirm" && (
-                <button type="button" onClick={(event) => { setAuthDiagnostics([authMode === "login" ? "Login clicked" : "Signup clicked"]); setAuthError(""); if (authMode === "login") login(event); else signup(event); }} className="w-full rounded-2xl bg-emerald-500 p-4 text-lg font-black text-white">{authMode === "login" ? "Login" : "Join challenge"}</button>
-              )}
-
-              {authDiagnostics.length > 0 && (
-                <div className="mt-4 rounded-2xl bg-slate-100 p-4 text-sm text-slate-700">
-                  <div className="font-black uppercase text-slate-500">Auth diagnostics</div>
-                  <ul className="list-disc space-y-1 pl-5 pt-3 text-xs">
-                    {authDiagnostics.map((line, index) => (
-                      <li key={index}>{line}</li>
-                    ))}
-                  </ul>
-                </div>
+                <button type="button" onClick={(event) => { setAuthError(""); if (authMode === "login") login(event); else signup(event); }} className="w-full rounded-2xl bg-emerald-500 p-4 text-lg font-black text-white">{authMode === "login" ? "Login" : "Join challenge"}</button>
               )}
             </form>
           </div>
@@ -1894,6 +1793,7 @@ export default function App() {
                     <input className="rounded-2xl border p-3 font-semibold" value={settings.company} onChange={(event) => setSettings({ ...settings, company: event.target.value })} placeholder="Company" />
                     <input className="rounded-2xl border p-3 font-semibold" value={settings.title} onChange={(event) => setSettings({ ...settings, title: event.target.value })} placeholder="Title" />
                     <input className="rounded-2xl border p-3 font-semibold" value={settings.joinCode} onChange={(event) => setSettings({ ...settings, joinCode: event.target.value.toUpperCase() })} placeholder="Join code" />
+                    <input className="rounded-2xl border p-3 font-semibold" value={settings.teams} onChange={(event) => setSettings({ ...settings, teams: event.target.value })} placeholder="Teams (comma-separated)" />
                     <input className="rounded-2xl border p-3 font-semibold" value={settings.startDate} onChange={(event) => setSettings({ ...settings, startDate: event.target.value })} placeholder="Start date" />
                     <input className="rounded-2xl border p-3 font-semibold" value={settings.endDate} onChange={(event) => setSettings({ ...settings, endDate: event.target.value })} placeholder="End date" />
                     <select className="rounded-2xl border p-3 font-semibold" value={settings.status} onChange={(event) => setSettings({ ...settings, status: event.target.value })}><option value="pre">Pre-start</option><option value="live">Live</option><option value="complete">Complete</option></select>
